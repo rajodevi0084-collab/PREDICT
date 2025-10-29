@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.websockets import WebSocketDisconnect
 
-from backend.services.reporting import Reporter
+from backend.services.reporter import Reporter
 
 ARTIFACTS_ROOT = Path("artifacts")
 REQUIRED_DIRECTORIES = [
