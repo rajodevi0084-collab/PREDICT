@@ -19,12 +19,7 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader, Dataset
 
-from backend.ml.feature_engineer import (
-    FEATURE_PIPELINE_VERSION,
-    FeatureSpec,
-    build_feature_map,
-    make_features,
-)
+from backend.ml.feature_engineer import FeatureSpec, build_feature_map, make_features
 from backend.services.reporter import Reporter
 
 
@@ -43,7 +38,6 @@ class TrainerConfig:
     smooth_l1_beta: float = 0.1
     coverage_targets: Sequence[float] = (0.5, 0.75, 0.9)
     ece_bins: int = 15
-    seed: int = 42
 
 
 class _TemporalDataset(Dataset[tuple[Tensor, Tensor, Tensor]]):
@@ -111,9 +105,6 @@ class Trainer:
         self._checkpoint_dir = Path("artifacts") / "models" / self.run_id
         self._checkpoint_dir.mkdir(parents=True, exist_ok=True)
         self._last_metrics: Optional[dict[str, float]] = None
-        self._metrics_path = self._checkpoint_dir / "metrics.json"
-        coverage_primary = int(self._coverage_targets[0] * 100) if self._coverage_targets else 75
-        self._primary_metric_key = f"acc@{coverage_primary}"
 
     def fit(self, frame: pd.DataFrame) -> dict[str, float]:
         """Execute the walk-forward training loop on ``frame``."""
@@ -157,7 +148,6 @@ class Trainer:
             {"event": "training_finished", **last_metrics},
         )
         self._last_metrics = last_metrics
-        self._write_metrics(last_metrics)
         return last_metrics
 
     # Backwards-compatible alias used by earlier revisions
@@ -203,7 +193,6 @@ class Trainer:
             "metrics": self._last_metrics or {},
             "feature_map": feature_map or build_feature_map([]),
             "data_ranges": data_ranges or {},
-            "feature_pipeline_version": FEATURE_PIPELINE_VERSION,
         }
         destination = self._checkpoint_dir / "model_card.json"
         destination.write_text(json.dumps(card, indent=2), encoding="utf-8")

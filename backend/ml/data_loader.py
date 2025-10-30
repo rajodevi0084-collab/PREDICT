@@ -84,11 +84,6 @@ def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
         df = df.sort_values(sort_columns, kind="mergesort")
     df = df.reset_index(drop=True)
 
-    # Normalise price/volume columns to numeric floats for downstream consumers.
-    for column in ("open", "high", "low", "close", "volume"):
-        if column in df.columns:
-            df[column] = pd.to_numeric(df[column], errors="coerce")
-
     return df
 
 

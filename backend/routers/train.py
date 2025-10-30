@@ -3,24 +3,17 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import traceback
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
-import pandas as pd
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel, Field, validator
 
 from backend.ml.data_loader import load_dataset
-from backend.ml.feature_engineer import (
-    FEATURE_PIPELINE_VERSION,
-    FeatureSpec,
-    build_feature_map,
-    make_features,
-)
+from backend.ml.feature_engineer import FeatureSpec, build_feature_map, make_features
 from backend.ml.model import TemporalTransformer, TemporalTransformerConfig
 from backend.ml.trainer import Trainer, TrainerConfig
 from backend.services import Registry
@@ -106,8 +99,7 @@ def _execute_training(run_id: str, payload: Dict[str, Any]) -> None:
         feature_budget = int(payload.get("feature_budget", 128))
         coverage = float(payload.get("coverage", 0.75))
 
-        if reporter is not None:
-            reporter.log(run_id, {"event": "loading_data", "files": files})
+        reporter.log(run_id, {"event": "loading_data", "files": files})
         frame = load_dataset(files, symbols=symbols)
         if frame.empty:
             raise ValueError("No rows available after loading datasets")
@@ -131,9 +123,7 @@ def _execute_training(run_id: str, payload: Dict[str, Any]) -> None:
         )
         model = TemporalTransformer(model_config)
 
-        default_targets = TrainerConfig().coverage_targets
-        coverage_targets = tuple(dict.fromkeys((coverage, *default_targets)))
-        trainer_config = TrainerConfig(max_epochs=epochs, coverage_targets=coverage_targets)
+        trainer_config = TrainerConfig(max_epochs=epochs)
         trainer = Trainer(
             model,
             feature_spec,
@@ -153,7 +143,6 @@ def _execute_training(run_id: str, payload: Dict[str, Any]) -> None:
                 },
                 "coverage_target": coverage,
                 "feature_columns": list(features.columns),
-                "feature_pipeline_version": FEATURE_PIPELINE_VERSION,
             },
         )
 
@@ -163,19 +152,16 @@ def _execute_training(run_id: str, payload: Dict[str, Any]) -> None:
             data_ranges=_summarise_data_ranges(frame),
         )
 
-        metrics_payload = {k: float(v) if isinstance(v, (int, float)) else v for k, v in metrics.items()}
-
         registry.update_run(
             run_id,
             status="completed",
-            metrics=metrics_payload,
+            metrics=metrics,
             metadata={
                 "temperature": metrics.get("temperature"),
                 "coverage_target": coverage,
             },
         )
-        if reporter is not None:
-            reporter.log(run_id, {"event": "run_completed", "metrics": metrics_payload})
+        reporter.log(run_id, {"event": "run_completed", "metrics": metrics})
     except Exception as exc:  # pragma: no cover - defensive
         registry.update_run(
             run_id,
@@ -195,13 +181,9 @@ def _execute_training(run_id: str, payload: Dict[str, Any]) -> None:
 
 
 def _summarise_data_ranges(frame: Any) -> dict[str, Any]:
-    if not isinstance(frame, pd.DataFrame):
-        return {}
-
-    summary: dict[str, Any] = {"rows": int(len(frame))}
-
+    summary: dict[str, Any] = {}
     if "timestamp" in frame.columns:
-        timestamps = pd.to_datetime(frame["timestamp"], utc=True, errors="coerce").dropna()
+        timestamps = frame["timestamp"].dropna()
         if not timestamps.empty:
             summary["timestamp"] = {
                 "min": timestamps.min().isoformat(),
@@ -210,15 +192,4 @@ def _summarise_data_ranges(frame: Any) -> dict[str, Any]:
     if "symbol" in frame.columns:
         symbols = sorted({str(symbol) for symbol in frame["symbol"].dropna().unique()})
         summary["symbols"] = symbols
-
-    if {"symbol", "timestamp"}.issubset(frame.columns):
-        fingerprint_source = frame.loc[:, ["symbol", "timestamp"]].copy()
-        fingerprint_source["timestamp"] = pd.to_datetime(
-            fingerprint_source["timestamp"], utc=True, errors="coerce"
-        )
-        fingerprint_source = fingerprint_source.dropna()
-        if not fingerprint_source.empty:
-            hashed = pd.util.hash_pandas_object(fingerprint_source, index=False).values.tobytes()
-            summary["fingerprint"] = hashlib.sha256(hashed).hexdigest()
-
     return summary
