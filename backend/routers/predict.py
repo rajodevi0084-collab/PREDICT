@@ -11,12 +11,7 @@ import pandas as pd
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field, validator
 
-from backend.ml.data_loader import (
-    DATA_DIR,
-    SUPPORTED_EXTENSIONS,
-    load_with_metadata,
-    slice_time,
-)
+from backend.ml.data_loader import load_dataset
 from backend.ml.infer import predict as run_prediction
 from backend.services import Registry
 
@@ -52,19 +47,20 @@ class PredictRequest(BaseModel):
 
 @router.post("/run")
 async def run_prediction_endpoint(payload: PredictRequest) -> dict[str, Any]:
-    path = _resolve_data_file(payload.file_id)
-    frame, metadata = load_with_metadata(path)
+    if not payload.files:
+        raise HTTPException(status_code=400, detail="No dataset files provided")
 
-    if payload.start or payload.end:
-        frame = slice_time(frame, start=payload.start, end=payload.end)
-
-    if payload.symbols:
-        if "symbol" not in frame.columns:
-            raise HTTPException(status_code=400, detail="Dataset does not contain a 'symbol' column")
-        symbols = {symbol.upper().strip() for symbol in payload.symbols if symbol}
-        if not symbols:
-            raise HTTPException(status_code=400, detail="No valid symbols provided")
-        frame = frame[frame["symbol"].astype(str).str.upper().isin(sorted(symbols))]
+    try:
+        frame = load_dataset(
+            payload.files,
+            symbols=payload.symbols,
+            start=payload.start,
+            end=payload.end,
+        )
+    except FileNotFoundError as exc:  # pragma: no cover - defensive
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if frame.empty:
         raise HTTPException(status_code=400, detail="No rows available after applying filters")
