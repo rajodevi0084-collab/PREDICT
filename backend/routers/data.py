@@ -8,7 +8,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
-from backend.ml.data_loader import DATA_DIR, SUPPORTED_EXTENSIONS, load_dataset
+from backend.ml.data_loader import DATA_DIR, SUPPORTED_EXTENSIONS, load_with_metadata
 
 router = APIRouter(prefix="/data", tags=["data"])
 
@@ -51,7 +51,7 @@ async def upload_data(file: UploadFile = File(...)) -> dict[str, object]:
         shutil.copyfileobj(file.file, buffer)
 
     try:
-        df, metadata = load_dataset(destination)
+        df, metadata = load_with_metadata(destination)
     except Exception as exc:  # pragma: no cover - defensive cleanup
         destination.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail=f"Failed to parse dataset: {exc}") from exc
@@ -62,7 +62,11 @@ async def upload_data(file: UploadFile = File(...)) -> dict[str, object]:
         "file_id": file_id,
         "filename": file.filename,
         "stored_as": destination.name,
-        "metadata": metadata.to_dict(),
+        "rows": metadata.rows,
+        "symbols": metadata.symbols,
+        "date_min": metadata.date_min,
+        "date_max": metadata.date_max,
+        "dtypes": metadata.dtypes,
         "preview": preview_rows,
     }
 
@@ -70,13 +74,15 @@ async def upload_data(file: UploadFile = File(...)) -> dict[str, object]:
 @router.get("/preview/{file_id}")
 async def preview_dataset(file_id: str) -> dict[str, object]:
     path = _resolve_file(file_id)
-    df, metadata = load_dataset(path)
+    df, metadata = load_with_metadata(path)
     rows = df.head(50).to_dict(orient="records")
     return {
         "file_id": file_id,
         "filename": path.name,
         "rows": rows,
         "dtypes": metadata.dtypes,
+        "symbols": metadata.symbols,
+        "rows_total": metadata.rows,
     }
 
 
@@ -89,12 +95,16 @@ async def catalog() -> dict[str, object]:
             continue
         if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
             continue
-        _, metadata = load_dataset(path)
+        _, metadata = load_with_metadata(path)
         items.append(
             {
                 "file_id": path.stem,
                 "filename": path.name,
-                "metadata": metadata.to_dict(),
+                "rows": metadata.rows,
+                "symbols": metadata.symbols,
+                "date_min": metadata.date_min,
+                "date_max": metadata.date_max,
+                "dtypes": metadata.dtypes,
             }
         )
     return {"items": items}

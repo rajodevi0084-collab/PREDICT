@@ -10,9 +10,14 @@ from typing import Any, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from backend.ml.data_loader import DATA_DIR, SUPPORTED_EXTENSIONS, load_dataset, slice_time
+from backend.ml.data_loader import (
+    DATA_DIR,
+    SUPPORTED_EXTENSIONS,
+    load_with_metadata,
+    slice_time,
+)
 from backend.ml.infer import predict as run_prediction
-from backend.services import RunRegistry
+from backend.services import Registry
 
 router = APIRouter(prefix="/predict", tags=["predict"])
 
@@ -45,7 +50,7 @@ def _resolve_data_file(file_id: str) -> Path:
 @router.post("/run")
 async def run_prediction_endpoint(payload: PredictRequest) -> dict[str, Any]:
     path = _resolve_data_file(payload.file_id)
-    frame, metadata = load_dataset(path)
+    frame, metadata = load_with_metadata(path)
 
     if payload.start or payload.end:
         frame = slice_time(frame, start=payload.start, end=payload.end)
@@ -61,7 +66,7 @@ async def run_prediction_endpoint(payload: PredictRequest) -> dict[str, Any]:
     if frame.empty:
         raise HTTPException(status_code=400, detail="No rows available after applying filters")
 
-    registry = RunRegistry()
+    registry = Registry()
     try:
         result = run_prediction(
             frame,
