@@ -32,7 +32,7 @@ class FeatureSpec:
         order-flow imbalance indicator.
     """
 
-    windows: tuple[int, ...] = field(default_factory=lambda: (5, 15, 60))
+    windows: tuple[int, ...] = field(default_factory=lambda: (5, 15, 60, 240))
     horizon: int = 5
     epsilon: float = 0.0
     include_spread: bool = False

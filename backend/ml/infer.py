@@ -16,7 +16,7 @@ from torch import Tensor, nn
 
 from backend.ml.feature_engineer import FeatureSpec, make_features
 from backend.ml.model import SSMEncoder, TemporalTransformer, TemporalTransformerConfig
-from backend.services import RunRegistry
+from backend.services import Registry, RunRegistry
 
 ARTIFACTS_DIR = Path("artifacts")
 PREDICTIONS_DIR = ARTIFACTS_DIR / "predictions"
@@ -42,7 +42,7 @@ def load_model(
 ) -> LoadedModel:
     """Load a trained model checkpoint and supporting metadata."""
 
-    registry = registry or RunRegistry()
+    registry = registry or Registry()
 
     run: Optional[dict[str, Any]]
     if run_id:

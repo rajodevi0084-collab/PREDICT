@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterable, Optional, Sequence
 
 import pandas as pd
 import pyarrow as pa
@@ -36,13 +36,13 @@ class DatasetMetadata:
         }
 
 
-def list_symbols(df: pd.DataFrame) -> list[str]:
-    """Return the sorted list of unique ticker symbols in ``df``."""
+def list_symbols(file_ids: Sequence[str | Path]) -> list[str]:
+    """Return the sorted list of unique ticker symbols across ``file_ids``."""
 
-    symbol_column = _find_symbol_column(df)
-    if symbol_column is None:
+    frame = load_dataset(file_ids)
+    if "symbol" not in frame.columns:
         return []
-    symbols = df[symbol_column].dropna().astype(str).str.upper().str.strip().unique()
+    symbols = frame["symbol"].dropna().astype(str).str.upper().str.strip().unique()
     return sorted(symbols.tolist())
 
 
@@ -78,33 +78,47 @@ def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
         df = df.drop_duplicates()
 
     if timestamp_column:
-        df = df.sort_values(timestamp_column)
-        df = df.reset_index(drop=True)
+        sort_columns = [timestamp_column]
+        if symbol_column:
+            sort_columns.insert(0, symbol_column)
+        df = df.sort_values(sort_columns, kind="mergesort")
+    df = df.reset_index(drop=True)
 
     return df
 
 
-def load_dataset(path: Path) -> tuple[pd.DataFrame, DatasetMetadata]:
-    """Load a dataset into a normalised DataFrame and compute metadata."""
+def load_dataset(
+    file_ids: Sequence[str | Path] | str | Path,
+    *,
+    symbols: Optional[Iterable[str]] = None,
+    start: Optional[pd.Timestamp | str] = None,
+    end: Optional[pd.Timestamp | str] = None,
+) -> pd.DataFrame:
+    """Load one or more datasets, normalise them, and apply optional filters."""
 
-    if not path.exists():
-        raise FileNotFoundError(path)
+    paths = _coerce_file_ids(file_ids)
+    frames = [_load_single(path) for path in paths]
+    if not frames:
+        raise ValueError("No datasets could be loaded")
 
-    suffix = path.suffix.lower()
-    if suffix not in SUPPORTED_EXTENSIONS:
-        raise ValueError(f"Unsupported file extension: {suffix}")
+    frame = pd.concat(frames, ignore_index=True, sort=False)
 
-    if suffix == ".csv":
-        df = pd.read_csv(path)
-    else:
-        parquet_file = pq.ParquetFile(path)
-        table = parquet_file.read()
-        df = table.to_pandas(types_mapper=_pyarrow_type_mapper)
+    if symbols:
+        normalized = {symbol.upper().strip() for symbol in symbols if symbol}
+        if normalized:
+            if "symbol" not in frame.columns:
+                raise ValueError("Dataset does not contain a 'symbol' column")
+            frame = frame[frame["symbol"].astype(str).str.upper().isin(sorted(normalized))]
 
-    df = _normalize_df(df)
-    arrow_schema = pa.Table.from_pandas(df, preserve_index=False).schema
-    metadata = _build_metadata(df, arrow_schema, len(df))
-    return df, metadata
+    if start is not None or end is not None:
+        frame = slice_time(frame, start=start, end=end)
+
+    if {"symbol", "timestamp"}.issubset(frame.columns):
+        frame = frame.sort_values(["symbol", "timestamp"], kind="mergesort")
+    elif "timestamp" in frame.columns:
+        frame = frame.sort_values("timestamp")
+
+    return frame.reset_index(drop=True)
 
 
 def slice_time(
@@ -164,7 +178,12 @@ def _build_metadata(df: pd.DataFrame, schema: pa.Schema, num_rows: int) -> Datas
             date_min = timestamps.min().isoformat()
             date_max = timestamps.max().isoformat()
 
-    symbols = list_symbols(df)
+    symbol_column = _find_symbol_column(df)
+    if symbol_column is not None:
+        symbols_series = df[symbol_column].dropna().astype(str).str.upper().str.strip()
+        symbols = sorted(symbols_series.unique().tolist())
+    else:
+        symbols = []
 
     dtypes = {}
     for field in schema:
@@ -179,6 +198,15 @@ def _build_metadata(df: pd.DataFrame, schema: pa.Schema, num_rows: int) -> Datas
         date_max=date_max,
         dtypes=dtypes,
     )
+
+
+def load_with_metadata(path: Path) -> tuple[pd.DataFrame, DatasetMetadata]:
+    """Load a single dataset and return it alongside metadata."""
+
+    df = _load_single(path)
+    schema = pa.Table.from_pandas(df, preserve_index=False).schema
+    metadata = _build_metadata(df, schema, len(df))
+    return df, metadata
 
 
 def _find_timestamp_column(df: pd.DataFrame) -> Optional[str]:
@@ -203,12 +231,59 @@ def _find_symbol_column(df: pd.DataFrame) -> Optional[str]:
     return None
 
 
+def _load_single(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        raise FileNotFoundError(path)
+
+    suffix = path.suffix.lower()
+    if suffix not in SUPPORTED_EXTENSIONS:
+        raise ValueError(f"Unsupported file extension: {suffix}")
+
+    if suffix == ".csv":
+        df = pd.read_csv(path)
+    else:
+        parquet_file = pq.ParquetFile(path)
+        table = parquet_file.read()
+        df = table.to_pandas(types_mapper=_pyarrow_type_mapper)
+
+    return _normalize_df(df)
+
+
+def _coerce_file_ids(file_ids: Sequence[str | Path] | str | Path) -> list[Path]:
+    if isinstance(file_ids, (str, Path)):
+        items: Sequence[str | Path] = [file_ids]
+    else:
+        items = file_ids
+
+    paths: list[Path] = []
+    for item in items:
+        path = _resolve_file(item)
+        paths.append(path)
+    return paths
+
+
+def _resolve_file(item: str | Path) -> Path:
+    path = Path(item)
+    if path.exists():
+        return path
+    # Treat bare identifiers as entries in the data directory.
+    if not path.suffix:
+        for suffix in sorted(SUPPORTED_EXTENSIONS):
+            candidate = DATA_DIR / f"{path}{suffix}"
+            if candidate.exists():
+                return candidate
+    matches = list(DATA_DIR.glob(f"{path}.*"))
+    if matches:
+        return matches[0]
+    raise FileNotFoundError(f"Dataset '{item}' not found")
+
+
 __all__ = [
     "DATA_DIR",
     "SUPPORTED_EXTENSIONS",
     "DatasetMetadata",
-    "_normalize_df",
     "list_symbols",
     "load_dataset",
+    "load_with_metadata",
     "slice_time",
 ]
