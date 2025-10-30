@@ -237,7 +237,9 @@ def make_features(df: pd.DataFrame, spec: FeatureSpec | None = None) -> tuple[pd
         axis=1,
     )
 
-    combined = combined.dropna(subset=list(feature_frame.columns) + [cls_target.name, reg_target.name])
+    combined = combined.dropna(
+        subset=list(feature_frame.columns) + [cls_target.name, reg_target.name]
+    ).reset_index(drop=True)
 
     meta = combined[["symbol", "timestamp"]].copy()
     X = combined[feature_frame.columns]
@@ -273,4 +275,3 @@ __all__ = [
     "make_features",
     "build_feature_map",
 ]
-
