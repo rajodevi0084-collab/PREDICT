@@ -1,103 +1,150 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
-import { uploadDataset, type UploadResponse } from "../lib/api";
-
-type UploadState = "idle" | "uploading" | "success" | "error";
+import { uploadFile, type UploadResponse } from "../lib/api";
 
 export interface FileDropProps {
   onUploadComplete?: (response: UploadResponse) => void;
 }
 
+type Status = "idle" | "uploading" | "success" | "error";
+
 export function FileDrop({ onUploadComplete }: FileDropProps) {
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const [state, setState] = useState<UploadState>("idle");
+  const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState<string | null>(null);
-  const [lastResponse, setLastResponse] = useState<UploadResponse | null>(null);
+  const [response, setResponse] = useState<UploadResponse | null>(null);
+
+  const reset = useCallback(() => {
+    setStatus("idle");
+    setError(null);
+    setResponse(null);
+  }, []);
 
   const handleFiles = useCallback(
     async (files: FileList | null) => {
       if (!files || files.length === 0) {
         return;
       }
-
       const file = files[0];
-      setState("uploading");
-      setError(null);
+      reset();
+      setStatus("uploading");
+
+      if (!/(csv|parquet|pq)$/i.test(file.name)) {
+        setError("Only CSV and Parquet files are supported.");
+        setStatus("error");
+        return;
+      }
 
       try {
-        const response = await uploadDataset(file);
-        setState("success");
-        setLastResponse(response);
-        onUploadComplete?.(response);
+        const result = await uploadFile(file);
+        setResponse(result);
+        setStatus("success");
+        onUploadComplete?.(result);
       } catch (err) {
-        const message = err instanceof Error ? err.message : "Upload failed";
-        setState("error");
-        setError(message);
+        setStatus("error");
+        setError(err instanceof Error ? err.message : "Upload failed");
       }
     },
-    [onUploadComplete]
+    [onUploadComplete, reset]
   );
 
-  const onDrop = useCallback(
-    (event: React.DragEvent<HTMLDivElement>) => {
-      event.preventDefault();
-      handleFiles(event.dataTransfer.files);
-    },
-    [handleFiles]
-  );
-
-  const onSelectFile = useCallback(
-    (event: React.ChangeEvent<HTMLInputElement>) => {
-      handleFiles(event.target.files);
-    },
-    [handleFiles]
-  );
-
-  const onBrowse = useCallback(() => {
+  const openFileDialog = useCallback(() => {
     inputRef.current?.click();
   }, []);
 
   return (
-    <div>
+    <section className="file-drop">
       <div
         className="drop-zone"
         onDragOver={(event) => event.preventDefault()}
-        onDrop={onDrop}
+        onDrop={(event) => {
+          event.preventDefault();
+          handleFiles(event.dataTransfer.files);
+        }}
         role="button"
         tabIndex={0}
+        onClick={openFileDialog}
         onKeyDown={(event) => {
           if (event.key === "Enter" || event.key === " ") {
-            onBrowse();
+            openFileDialog();
           }
         }}
       >
         <input
           ref={inputRef}
           type="file"
-          accept=".csv,.json,.parquet"
-          className="drop-input"
-          onChange={onSelectFile}
+          accept=".csv,.parquet"
+          className="sr-only"
+          onChange={(event) => handleFiles(event.target.files)}
         />
-        <p className="drop-message">
-          Drag & drop your dataset file here, or <span className="drop-link">browse</span> to upload.
-        </p>
-        <p className="drop-hint">Supported formats: CSV, JSON, Parquet</p>
+        <p>Drag & drop a CSV or Parquet file here, or click to browse.</p>
+        <p className="hint">Files are normalised to UTC timestamps and uppercase symbols.</p>
       </div>
-      {state === "uploading" && <p className="info">Uploading dataset…</p>}
-      {state === "success" && lastResponse && (
-        <div className="success">
-          <strong>Upload complete!</strong>
-          <p>Dataset ID: {lastResponse.datasetId}</p>
-          {lastResponse.message && <p>{lastResponse.message}</p>}
+
+      {status === "uploading" && <p className="info">Uploading and parsing dataset…</p>}
+      {status === "error" && error && <p className="error">{error}</p>}
+
+      {status === "success" && response && (
+        <div className="upload-summary">
+          <h3>Upload complete</h3>
+          <dl>
+            <div>
+              <dt>Dataset ID</dt>
+              <dd>{response.file_id}</dd>
+            </div>
+            <div>
+              <dt>Rows</dt>
+              <dd>{response.rows.toLocaleString()}</dd>
+            </div>
+            <div>
+              <dt>Symbols</dt>
+              <dd>{response.symbols.join(", ") || "—"}</dd>
+            </div>
+            <div>
+              <dt>Date range</dt>
+              <dd>
+                {response.date_min && response.date_max
+                  ? `${new Date(response.date_min).toLocaleString()} → ${new Date(response.date_max).toLocaleString()}`
+                  : "—"}
+              </dd>
+            </div>
+          </dl>
+          <div className="preview-table">
+            <table>
+              <thead>
+                <tr>
+                  {Object.keys(response.preview[0] ?? {}).map((column) => (
+                    <th key={column}>{column}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {response.preview.map((row, index) => (
+                  <tr key={`${response.file_id}-${index}`}>
+                    {Object.entries(row).map(([key, value]) => (
+                      <td key={key}>{renderValue(value)}</td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
-      {state === "error" && error && (
-        <div className="error">
-          <strong>Upload failed:</strong>
-          <p>{error}</p>
-        </div>
-      )}
-    </div>
+    </section>
   );
+}
+
+function renderValue(value: unknown): string {
+  if (value === null || value === undefined) {
+    return "—";
+  }
+  if (typeof value === "number") {
+    return Number.isInteger(value) ? value.toString() : value.toFixed(4);
+  }
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  return String(value);
 }

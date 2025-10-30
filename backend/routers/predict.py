@@ -1,4 +1,4 @@
-"""Prediction endpoints orchestrating inference workflows."""
+"""Prediction endpoints for running inference and accessing manifests."""
 
 from __future__ import annotations
 
@@ -7,8 +7,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
+import pandas as pd
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
 
 from backend.ml.data_loader import (
     DATA_DIR,
@@ -23,28 +24,30 @@ router = APIRouter(prefix="/predict", tags=["predict"])
 
 
 class PredictRequest(BaseModel):
-    file_id: str = Field(..., description="Identifier of the uploaded dataset")
-    run_id: Optional[str] = Field(None, description="Model run identifier to use for inference")
-    start: Optional[datetime] = Field(None, description="Optional start timestamp filter")
-    end: Optional[datetime] = Field(None, description="Optional end timestamp filter")
+    files: list[str] = Field(..., min_items=1, description="Uploaded dataset identifiers")
+    run_id: Optional[str] = Field(None, description="Model run identifier or 'active'")
     symbols: Optional[list[str]] = Field(None, description="Restrict inference to these symbols")
+    start: Optional[datetime] = Field(None, description="Optional UTC start timestamp filter")
+    end: Optional[datetime] = Field(None, description="Optional UTC end timestamp filter")
     coverage_target: Optional[float] = Field(
         None,
         ge=0.0,
         le=1.0,
-        description="Override the default coverage target for abstention",
+        description="Override the target coverage when selecting an abstention threshold",
+    )
+    tau: Optional[float] = Field(
+        None,
+        ge=0.0,
+        le=1.0,
+        description="Directly provide an abstention threshold instead of using coverage",
     )
 
-
-def _resolve_data_file(file_id: str) -> Path:
-    for suffix in sorted(SUPPORTED_EXTENSIONS):
-        candidate = DATA_DIR / f"{file_id}{suffix}"
-        if candidate.exists():
-            return candidate
-    matches = list(DATA_DIR.glob(f"{file_id}.*"))
-    if matches:
-        return matches[0]
-    raise HTTPException(status_code=404, detail="Dataset not found")
+    @validator("symbols", pre=True)
+    def _normalize_symbols(cls, value: Optional[list[str]]) -> Optional[list[str]]:  # noqa: N805
+        if value is None:
+            return None
+        normalized = [symbol.upper().strip() for symbol in value if symbol]
+        return normalized or None
 
 
 @router.post("/run")
@@ -73,28 +76,33 @@ async def run_prediction_endpoint(payload: PredictRequest) -> dict[str, Any]:
             run_id=payload.run_id,
             registry=registry,
             coverage_target=payload.coverage_target,
+            tau=payload.tau,
         )
-    except FileNotFoundError as exc:
+    except FileNotFoundError as exc:  # pragma: no cover - defensive
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    predictions_df: pd.DataFrame = result.pop("predictions")
+    predictions_path = str(result.pop("predictions_path"))
+    manifest_path = str(result.pop("manifest_path"))
+    preview = predictions_df.head(200).to_dict(orient="records")
+
     manifest = result["manifest"].copy()
     artifacts = manifest.get("artifacts", {})
 
+    dataset_summary = _summarise_dataset(frame)
+
     return {
-        "run_id": result["run_id"],
-        "num_rows": result["num_rows"],
-        "tau": result["tau"],
-        "coverage_target": result["coverage_target"],
-        "temperature": result["temperature"],
-        "feature_columns": result["feature_columns"],
+        **result,
+        "predictions_path": predictions_path,
+        "manifest_path": manifest_path,
         "artifacts": artifacts,
         "dataset": {
-            "file_id": payload.file_id,
-            "filename": path.name,
-            "metadata": metadata.to_dict(),
+            "files": payload.files,
+            **dataset_summary,
         },
+        "preview": preview,
     }
 
 
@@ -109,6 +117,11 @@ async def latest_prediction() -> dict[str, Any]:
     manifest = json.loads(latest.read_text(encoding="utf-8"))
 
     predictions_path = latest.parent / "predictions.parquet"
+    preview: list[dict[str, Any]] = []
+    if predictions_path.exists():
+        predictions_df = pd.read_parquet(predictions_path)
+        preview = predictions_df.head(200).to_dict(orient="records")
+
     manifest.setdefault("artifacts", {})
     manifest["artifacts"].setdefault(
         "manifest",
@@ -121,4 +134,19 @@ async def latest_prediction() -> dict[str, Any]:
 
     manifest["path"] = str(latest)
     manifest["predictions_path"] = str(predictions_path)
+    manifest["preview"] = preview
     return manifest
+
+
+def _summarise_dataset(frame: pd.DataFrame) -> dict[str, Any]:
+    summary: dict[str, Any] = {"rows": int(len(frame))}
+    if "timestamp" in frame.columns:
+        timestamps = pd.to_datetime(frame["timestamp"], utc=True, errors="coerce").dropna()
+        if not timestamps.empty:
+            summary["timestamp"] = {
+                "min": timestamps.min().isoformat(),
+                "max": timestamps.max().isoformat(),
+            }
+    if "symbol" in frame.columns:
+        summary["symbols"] = sorted({str(symbol) for symbol in frame["symbol"].dropna().unique()})
+    return summary

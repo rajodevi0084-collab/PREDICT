@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import random
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional, Sequence
@@ -11,12 +12,12 @@ from typing import Any, Optional, Sequence
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn.functional as F
 from torch import Tensor, nn
 from torch.cuda.amp import GradScaler, autocast
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader, Dataset
-import torch.nn.functional as F
 
 from backend.ml.feature_engineer import FeatureSpec, build_feature_map, make_features
 from backend.services.reporter import Reporter
@@ -93,6 +94,8 @@ class Trainer:
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = torch.device(device)
+
+        self._set_random_seeds(self.config.seed)
 
         self.model.to(self.device)
         self._num_classes = getattr(getattr(model, "config", None), "num_classes", 3)
@@ -198,6 +201,15 @@ class Trainer:
     # ---------------------------------------------------------------------
     # Helper methods
     # ---------------------------------------------------------------------
+    def _set_random_seeds(self, seed: int) -> None:
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
     def _build_dataloader(
         self,
         X: pd.DataFrame,
@@ -234,6 +246,7 @@ class Trainer:
         best_val = math.inf
         patience = 0
         best_metrics: dict[str, float] = {}
+        best_score = None
 
         for epoch in range(1, self.config.max_epochs + 1):
             self.model.train()
@@ -273,7 +286,9 @@ class Trainer:
                 {"event": "epoch_end", **val_metrics},
             )
 
-            if val_loss < best_val:
+            score = self._score_for_early_stopping(val_metrics)
+            if best_score is None or score < best_score:
+                best_score = score
                 best_val = val_loss
                 patience = 0
                 best_metrics = val_metrics
@@ -400,6 +415,20 @@ class Trainer:
         acc = (preds[mask] == targets[mask]).float().mean().item()
         return acc, actual_cov
 
+    def _score_for_early_stopping(self, metrics: dict[str, float]) -> tuple[float, float, float]:
+        acc = float(metrics.get(self._primary_metric_key, float("nan")))
+        brier = float(metrics.get("brier", float("inf")))
+        val_loss = float(metrics.get("val_loss", float("inf")))
+        if not math.isfinite(acc):
+            acc_term = float("inf")
+        else:
+            acc_term = -acc
+        if not math.isfinite(brier):
+            brier = float("inf")
+        if not math.isfinite(val_loss):
+            val_loss = float("inf")
+        return (acc_term, brier, val_loss)
+
     def _calibrate_temperature(self, logits: Tensor, targets: Tensor) -> float:
         if logits.numel() == 0:
             return 1.0
@@ -483,6 +512,16 @@ class Trainer:
             splits.append((ordered_indices[:cutoff], ordered_indices[cutoff:]))
 
         return splits
+
+
+    def _write_metrics(self, metrics: dict[str, float]) -> None:
+        serializable: dict[str, Any] = {}
+        for key, value in metrics.items():
+            if isinstance(value, (int, float)):
+                serializable[key] = float(value)
+            else:
+                serializable[key] = value
+        self._metrics_path.write_text(json.dumps(serializable, indent=2), encoding="utf-8")
 
 
 __all__ = ["Trainer", "TrainerConfig"]

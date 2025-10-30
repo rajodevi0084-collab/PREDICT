@@ -14,7 +14,7 @@ import pandas as pd
 import torch
 from torch import Tensor, nn
 
-from backend.ml.feature_engineer import FeatureSpec, make_features
+from backend.ml.feature_engineer import FeatureSpec, compute_labels, make_features
 from backend.ml.model import SSMEncoder, TemporalTransformer, TemporalTransformerConfig
 from backend.services import Registry, RunRegistry
 
@@ -94,6 +94,7 @@ def predict(
     run_id: str | None = None,
     registry: RunRegistry | None = None,
     coverage_target: float | None = None,
+    tau: float | None = None,
     temperature: float | None = None,
     device: str | torch.device | None = None,
 ) -> dict[str, Any]:
@@ -105,6 +106,10 @@ def predict(
 
     cov_target = float(coverage_target if coverage_target is not None else loaded.coverage_target)
     cov_target = float(np.clip(cov_target, 0.0, 1.0))
+
+    tau_override: float | None = None
+    if tau is not None:
+        tau_override = float(np.clip(tau, 0.0, 1.0))
 
     temp = float(temperature if temperature is not None else loaded.temperature)
     if not math.isfinite(temp) or temp <= 0:
@@ -128,31 +133,54 @@ def predict(
         raise ValueError("Model must output at least three classes (down, neutral, up)")
 
     confidences, pred_indices = torch.max(probs, dim=-1)
-    tau = _select_tau_for_coverage(confidences, cov_target)
-    abstain_mask = confidences < tau
+    tau_used = tau_override if tau_override is not None else _select_tau_for_coverage(confidences, cov_target)
+    abstain_mask = confidences < tau_used
 
     probs_cpu = probs.detach().cpu()
     reg_cpu = reg_pred.detach().cpu().to(torch.float32)
 
-    base_prices = frame.loc[X.index, "close"].astype(float).to_numpy(copy=True)
+    base_prices = frame.loc[meta.index, "close"].astype(float).to_numpy(copy=True)
     y_pred_price = base_prices + reg_cpu.numpy()
+
+    _, reg_true = compute_labels(frame, loaded.feature_spec)
+    y_true = (frame["close"].astype(float) + reg_true).loc[meta.index].to_numpy(copy=True)
 
     predictions = pd.DataFrame(
         {
             "timestamp": meta["timestamp"].to_numpy(),
             "symbol": meta["symbol"].to_numpy(),
+            "horizon": int(loaded.feature_spec.horizon),
+            "y_true": y_true,
+            "y_pred_price": y_pred_price,
             "p_down": probs_cpu[:, 0].numpy(),
             "p_up": probs_cpu[:, -1].numpy(),
             "p_neutral": probs_cpu[:, 1].numpy() if probs_cpu.shape[1] > 2 else np.nan,
-            "y_pred_price": y_pred_price,
+            "margin": (probs_cpu[:, -1] - probs_cpu[:, 0]).numpy(),
             "abstain": abstain_mask.cpu().numpy(),
             "confidence": confidences.detach().cpu().numpy(),
             "predicted_class": pred_indices.detach().cpu().numpy(),
-            "tau": tau,
+            "tau": tau_used,
             "coverage_target": cov_target,
             "run_id": run["id"],
         }
     )
+
+    ordered = [
+        "timestamp",
+        "symbol",
+        "horizon",
+        "y_true",
+        "y_pred_price",
+        "p_up",
+        "p_down",
+        "margin",
+        "abstain",
+        "tau",
+        "coverage_target",
+        "run_id",
+    ]
+    remaining = [column for column in predictions.columns if column not in ordered]
+    predictions = predictions[ordered + remaining]
 
     output_dir = PREDICTIONS_DIR / run["id"]
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -163,10 +191,12 @@ def predict(
         "run_id": run["id"],
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "num_rows": int(len(predictions)),
-        "tau": float(tau),
+        "tau": float(tau_used),
         "coverage_target": float(cov_target),
         "temperature": float(temp),
         "feature_columns": list(X.columns),
+        "horizon": int(loaded.feature_spec.horizon),
+        "tau_source": "manual" if tau_override is not None else "coverage",
         "artifacts": {
             "predictions": f"/artifacts/{predictions_path.relative_to(ARTIFACTS_DIR).as_posix()}",
         },
@@ -182,10 +212,11 @@ def predict(
         "manifest_path": manifest_path,
         "manifest": manifest,
         "num_rows": int(len(predictions)),
-        "tau": float(tau),
+        "tau": float(tau_used),
         "coverage_target": float(cov_target),
         "temperature": float(temp),
         "feature_columns": list(X.columns),
+        "predictions": predictions,
     }
 
 
