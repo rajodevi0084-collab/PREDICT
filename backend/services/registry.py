@@ -294,4 +294,8 @@ class RunRegistry:
         return datetime.now(timezone.utc).isoformat()
 
 
-__all__ = ["RunRegistry"]
+class Registry(RunRegistry):
+    """Backward-compatible alias matching the project specification."""
+
+
+__all__ = ["RunRegistry", "Registry"]

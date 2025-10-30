@@ -1,70 +1,115 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { fetchRunMetrics, listRuns, type RunSummary } from "../../lib/api";
-import {
-  PredictionChart,
-  type PredictionChartPoint
-} from "../../components/PredictionChart";
+import { useEffect, useMemo, useState } from "react";
+import { getLatestPrediction, type LatestPredictionResponse } from "../../lib/api";
+import { PredictionChart } from "../../components/PredictionChart";
 
 export default function ChartsPage() {
-  const [runs, setRuns] = useState<PredictionChartPoint[]>([]);
+  const [latest, setLatest] = useState<LatestPredictionResponse | null>(null);
+  const [selectedSymbol, setSelectedSymbol] = useState<string>("ALL");
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+
+  const refresh = async () => {
+    try {
+      const response = await getLatestPrediction();
+      setLatest(response);
+      const symbols = Array.from(new Set(response.preview.map((row) => row.symbol))).sort();
+      setSelectedSymbol(symbols[0] ?? "ALL");
+      setError(null);
+    } catch (err) {
+      setError("Failed to load latest predictions");
+    }
+  };
 
   useEffect(() => {
-    async function load() {
-      try {
-        const runSummaries = await listRuns();
-        const withMetrics = await Promise.all(
-          runSummaries.map(async (run: RunSummary) => {
-            try {
-              const metrics = await fetchRunMetrics(run.id);
-              return {
-                runId: run.id,
-                createdAt: run.createdAt,
-                accuracy: metrics.accuracy ?? (run as RunSummary).accuracy,
-                loss: metrics.loss ?? (run as RunSummary).loss
-              } satisfies PredictionChartPoint;
-            } catch (err) {
-              console.warn(`Unable to fetch metrics for run ${run.id}`, err);
-              return {
-                runId: run.id,
-                createdAt: run.createdAt,
-                accuracy: run.accuracy,
-                loss: run.loss
-              } satisfies PredictionChartPoint;
-            }
-          })
-        );
-        setRuns(withMetrics);
-        setError(null);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : "Failed to load run metrics";
-        setError(message);
-      } finally {
-        setLoading(false);
-      }
-    }
-
-    load().catch(() => undefined);
+    void refresh();
   }, []);
 
+  const chartData = useMemo(() => {
+    if (!latest) {
+      return [];
+    }
+    return latest.preview
+      .filter((row) => selectedSymbol === "ALL" || row.symbol === selectedSymbol)
+      .map((row) => ({
+        timestamp: row.timestamp,
+        y_true: typeof row.y_true === "number" ? row.y_true : null,
+        y_pred_price: row.y_pred_price,
+        abstain: Boolean(row.abstain),
+      }));
+  }, [latest, selectedSymbol]);
+
+  const symbols = useMemo(() => {
+    if (!latest) {
+      return [];
+    }
+    return Array.from(new Set(latest.preview.map((row) => row.symbol))).sort();
+  }, [latest]);
+
   return (
-    <section className="card">
-      <h2>Run Metrics</h2>
-      <p>
-        Compare accuracy and loss across training runs. The chart updates automatically whenever new
-        run metrics are available.
-      </p>
-      {loading && <p className="info">Loading metrics…</p>}
-      {error && (
-        <div className="error">
-          <strong>Unable to load metrics.</strong>
-          <p>{error}</p>
-        </div>
+    <div className="container">
+      <header className="panel-header">
+        <h2>Prediction charts</h2>
+        <button type="button" onClick={() => void refresh()}>
+          Refresh
+        </button>
+      </header>
+      {error && <p className="error">{error}</p>}
+      {!latest && !error && <p className="hint">Run a prediction to see charts.</p>}
+      {latest && (
+        <section className="charts-section">
+          <div className="metadata">
+            <p>
+              Run <strong>{latest.run_id}</strong> · τ={latest.tau.toFixed(3)} · coverage target={latest.coverage_target.toFixed(2)}
+            </p>
+            <p>Generated at {latest.generated_at ? new Date(latest.generated_at).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }) : "unknown"}</p>
+          </div>
+          {symbols.length > 0 && (
+            <label className="field inline">
+              <span>Symbol</span>
+              <select value={selectedSymbol} onChange={(event) => setSelectedSymbol(event.target.value)}>
+                <option value="ALL">All symbols</option>
+                {symbols.map((symbol) => (
+                  <option key={symbol} value={symbol}>
+                    {symbol}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          <PredictionChart data={chartData} />
+          <div className="table-wrapper">
+            <table>
+              <thead>
+                <tr>
+                  {Object.keys(latest.preview[0] ?? {}).map((column) => (
+                    <th key={column}>{column}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {latest.preview.slice(0, 100).map((row, index) => (
+                  <tr key={`${row.timestamp}-${index}`}>
+                    {Object.entries(row).map(([key, value]) => (
+                      <td key={key}>{formatCell(value)}</td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
       )}
-      {!loading && !error && <PredictionChart runs={runs} />}
-    </section>
+    </div>
   );
+}
+
+function formatCell(value: unknown): string {
+  if (value === null || value === undefined) {
+    return "—";
+  }
+  if (typeof value === "number") {
+    return Number.isInteger(value) ? value.toString() : value.toFixed(4);
+  }
+  return String(value);
 }

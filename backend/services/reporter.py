@@ -45,6 +45,11 @@ class Reporter:
         else:
             loop.create_task(coro)
 
+    def log(self, run_id: str, payload: dict[str, Any]) -> None:
+        """Convenience wrapper to publish a log event."""
+
+        self.publish(run_id, event="log", payload=payload)
+
     async def close(self, run_id: str) -> None:
         """Close all queues associated with ``run_id``."""
 

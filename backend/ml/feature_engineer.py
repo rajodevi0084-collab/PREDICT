@@ -8,6 +8,8 @@ from typing import Sequence
 import numpy as np
 import pandas as pd
 
+FEATURE_PIPELINE_VERSION = "1.0.0"
+
 
 @dataclass(frozen=True)
 class FeatureSpec:
@@ -32,7 +34,7 @@ class FeatureSpec:
         order-flow imbalance indicator.
     """
 
-    windows: tuple[int, ...] = field(default_factory=lambda: (5, 15, 60))
+    windows: tuple[int, ...] = field(default_factory=lambda: (5, 15, 60, 240))
     horizon: int = 5
     epsilon: float = 0.0
     include_spread: bool = False
@@ -70,7 +72,7 @@ def compute_labels(df: pd.DataFrame, spec: FeatureSpec) -> tuple[pd.Series, pd.S
     future_close = grouped["close"].shift(-horizon)
     delta = future_close - df["close"]
 
-    cls = pd.Series(0, index=df.index, dtype=int)
+    cls = pd.Series(np.nan, index=df.index, dtype=float)
     cls[delta > spec.epsilon] = 1
     cls[delta < -spec.epsilon] = -1
 
@@ -262,4 +264,13 @@ def build_feature_map(feature_columns: Sequence[str] | pd.Index) -> dict[str, in
         ordered = list(feature_columns)
 
     return {name: idx for idx, name in enumerate(ordered)}
+
+
+__all__ = [
+    "FeatureSpec",
+    "FEATURE_PIPELINE_VERSION",
+    "compute_labels",
+    "make_features",
+    "build_feature_map",
+]
 

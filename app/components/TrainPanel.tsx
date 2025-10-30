@@ -1,189 +1,319 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  createRunWebSocket,
-  fetchRunMetrics,
+  getCatalog,
   listRuns,
+  openWS,
   promoteRun,
-  startTraining,
-  type RunSummary
+  startTrain,
+  type CatalogItem,
+  type TrainRun,
+  type TrainStartRequest,
 } from "../lib/api";
 
-type PanelState = "idle" | "loading" | "updating";
-
-interface RunWithMetrics extends RunSummary {
-  metrics?: Record<string, number>;
+interface RunsState {
+  runs: TrainRun[];
+  active: string | null;
 }
 
-export function TrainPanel() {
-  const [runs, setRuns] = useState<RunWithMetrics[]>([]);
-  const [panelState, setPanelState] = useState<PanelState>("idle");
-  const [error, setError] = useState<string | null>(null);
-  const [selectedDataset, setSelectedDataset] = useState<string>("");
+interface LogMessage {
+  timestamp: string;
+  event: string;
+  payload: Record<string, unknown>;
+}
 
-  const loadRuns = useCallback(async () => {
-    setPanelState("loading");
+const DEFAULT_FORM: TrainStartRequest = {
+  files: [],
+  symbols: [],
+  horizon: 5,
+  epochs: 25,
+  feature_budget: 128,
+  coverage: 0.75,
+};
+
+export function TrainPanel() {
+  const [catalog, setCatalog] = useState<CatalogItem[]>([]);
+  const [runsState, setRunsState] = useState<RunsState>({ runs: [], active: null });
+  const [form, setForm] = useState<TrainStartRequest>(DEFAULT_FORM);
+  const [symbolsInput, setSymbolsInput] = useState<string>("");
+  const [loading, setLoading] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+  const [logs, setLogs] = useState<LogMessage[]>([]);
+  const wsRef = useRef<WebSocket | null>(null);
+
+  const refreshCatalog = useCallback(async () => {
     try {
-      const data = await listRuns();
-      setRuns(data);
-      setError(null);
+      const response = await getCatalog();
+      setCatalog(response.items);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to load runs";
-      setError(message);
-    } finally {
-      setPanelState("idle");
+      console.error("Failed to load catalog", err);
+      setError("Unable to fetch dataset catalog.");
+    }
+  }, []);
+
+  const refreshRuns = useCallback(async () => {
+    try {
+      const response = await listRuns();
+      setRunsState(response);
+    } catch (err) {
+      console.error("Failed to load runs", err);
+      setError("Unable to fetch training runs.");
     }
   }, []);
 
   useEffect(() => {
-    loadRuns().catch(() => undefined);
-  }, [loadRuns]);
+    void refreshCatalog();
+    void refreshRuns();
+    return () => {
+      wsRef.current?.close();
+    };
+  }, [refreshCatalog, refreshRuns]);
 
-  const subscribeToRun = useCallback((runId: string) => {
-    const socket = createRunWebSocket(runId);
-    socket.onmessage = async () => {
-      try {
-        const metrics = await fetchRunMetrics(runId);
-        setRuns((prev) =>
-          prev.map((run) => (run.id === runId ? { ...run, metrics } : run))
-        );
-      } catch (err) {
-        console.error("Failed to refresh metrics", err);
-      }
-    };
-    socket.onerror = (event) => {
-      console.error("Run socket error", event);
-    };
-    socket.onclose = () => {
-      // nothing for now
-    };
-    return () => socket.close();
+  const handleFileSelection = useCallback((event: React.ChangeEvent<HTMLSelectElement>) => {
+    const selected = Array.from(event.target.selectedOptions).map((option) => option.value);
+    setForm((prev) => ({ ...prev, files: selected }));
   }, []);
 
-  const onStartTraining = useCallback(async () => {
-    if (!selectedDataset) {
-      setError("Select a dataset identifier before starting training.");
+  const handleNumberChange = useCallback(
+    (key: keyof TrainStartRequest) =>
+      (event: React.ChangeEvent<HTMLInputElement>) => {
+        const value = event.target.valueAsNumber;
+        setForm((prev) => ({ ...prev, [key]: Number.isFinite(value) ? value : prev[key] }));
+      },
+    []
+  );
+
+  const connectLogs = useCallback((runId: string) => {
+    wsRef.current?.close();
+    const socket = openWS(runId);
+    wsRef.current = socket;
+    setLogs([]);
+
+    socket.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data) as { timestamp?: string; event?: string; payload?: Record<string, unknown> };
+        setLogs((prev) => [
+          {
+            timestamp: data.timestamp ?? new Date().toISOString(),
+            event: data.event ?? "log",
+            payload: data.payload ?? {},
+          },
+          ...prev,
+        ]);
+      } catch (err) {
+        console.error("Failed to parse log message", err);
+      }
+      void refreshRuns();
+    };
+
+    socket.onerror = (event) => {
+      console.error("WebSocket error", event);
+    };
+
+    socket.onclose = () => {
+      wsRef.current = null;
+    };
+  }, [refreshRuns]);
+
+  const handleStart = useCallback(async () => {
+    if (form.files.length === 0) {
+      setError("Select at least one dataset to start training.");
       return;
     }
-    setPanelState("updating");
+    const symbols = symbolsInput
+      .split(/[,\n]/)
+      .map((item) => item.trim().toUpperCase())
+      .filter(Boolean);
+
+    setLoading(true);
+    setError(null);
     try {
-      const response = await startTraining(selectedDataset);
-      setError(null);
-      await loadRuns();
-      subscribeToRun(response.runId);
+      const payload: TrainStartRequest = {
+        ...form,
+        symbols: symbols.length ? symbols : undefined,
+      };
+      const response = await startTrain(payload);
+      connectLogs(response.run_id);
+      await refreshRuns();
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to start training";
       setError(message);
     } finally {
-      setPanelState("idle");
+      setLoading(false);
     }
-  }, [loadRuns, selectedDataset, subscribeToRun]);
+  }, [connectLogs, form, refreshRuns, symbolsInput]);
 
-  const onPromote = useCallback(
+  const handlePromote = useCallback(
     async (runId: string) => {
-      setPanelState("updating");
+      setLoading(true);
+      setError(null);
       try {
         await promoteRun(runId);
-        await loadRuns();
+        await refreshRuns();
       } catch (err) {
         const message = err instanceof Error ? err.message : "Failed to promote run";
         setError(message);
       } finally {
-        setPanelState("idle");
+        setLoading(false);
       }
     },
-    [loadRuns]
+    [refreshRuns]
   );
 
-  const decoratedRuns = useMemo(
-    () =>
-      runs
-        .slice()
-        .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)),
-    [runs]
-  );
+  const sortedRuns = useMemo(() => {
+    return runsState.runs
+      .slice()
+      .sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
+  }, [runsState.runs]);
+
+  const primaryCoverageKey = useMemo(() => {
+    const first = sortedRuns.find((run) => run.metrics && Object.keys(run.metrics).some((key) => key.startsWith("acc@")));
+    if (!first) {
+      return "acc@75";
+    }
+    const candidate = Object.keys(first.metrics ?? {}).find((key) => key.startsWith("acc@"));
+    return candidate ?? "acc@75";
+  }, [sortedRuns]);
 
   return (
-    <div className="panel">
-      <div className="panel-header">
-        <h2>Training Runs</h2>
-        <button
-          type="button"
-          className="refresh-button"
-          onClick={() => loadRuns().catch(() => undefined)}
-          disabled={panelState !== "idle"}
-        >
-          Refresh
-        </button>
-      </div>
-      <div className="form-row">
+    <section className="train-panel">
+      <header className="panel-header">
+        <h2>Start a training run</h2>
+        <div className="actions">
+          <button type="button" onClick={() => void refreshCatalog()} disabled={loading}>
+            Refresh datasets
+          </button>
+          <button type="button" onClick={() => void refreshRuns()} disabled={loading}>
+            Refresh runs
+          </button>
+        </div>
+      </header>
+
+      <div className="form-grid">
         <label className="field">
-          <span>Dataset ID</span>
-          <input
-            type="text"
-            value={selectedDataset}
-            onChange={(event) => setSelectedDataset(event.target.value)}
-            placeholder="Enter dataset identifier"
+          <span>Datasets</span>
+          <select multiple value={form.files} onChange={handleFileSelection}>
+            {catalog.map((item) => (
+              <option key={item.file_id} value={item.file_id}>
+                {item.filename} ({item.rows.toLocaleString()} rows)
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>Symbols (comma separated)</span>
+          <textarea
+            value={symbolsInput}
+            onChange={(event) => setSymbolsInput(event.target.value)}
+            placeholder="Leave empty for all symbols"
           />
         </label>
-        <button
-          type="button"
-          className="primary"
-          onClick={onStartTraining}
-          disabled={panelState === "updating"}
-        >
-          Start Training
+        <label className="field">
+          <span>Horizon</span>
+          <input type="number" min={1} value={form.horizon} onChange={handleNumberChange("horizon")} />
+        </label>
+        <label className="field">
+          <span>Epochs</span>
+          <input type="number" min={1} value={form.epochs} onChange={handleNumberChange("epochs")} />
+        </label>
+        <label className="field">
+          <span>Feature budget</span>
+          <input type="number" min={32} step={16} value={form.feature_budget} onChange={handleNumberChange("feature_budget")} />
+        </label>
+        <label className="field">
+          <span>Coverage target</span>
+          <input
+            type="number"
+            min={0}
+            max={1}
+            step={0.05}
+            value={form.coverage}
+            onChange={handleNumberChange("coverage")}
+          />
+        </label>
+      </div>
+
+      <div className="form-actions">
+        <button type="button" className="primary" onClick={handleStart} disabled={loading}>
+          Start training
         </button>
       </div>
-      {error && (
-        <div className="error">
-          <strong>Something went wrong.</strong>
-          <p>{error}</p>
-        </div>
-      )}
-      <div className="table-wrapper">
-        <table>
-          <thead>
-            <tr>
-              <th>Run ID</th>
-              <th>Status</th>
-              <th>Accuracy</th>
-              <th>Loss</th>
-              <th>Created</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {decoratedRuns.map((run) => (
-              <tr key={run.id}>
-                <td>{run.id}</td>
-                <td>{run.status}</td>
-                <td>{run.accuracy ?? run.metrics?.accuracy ?? "—"}</td>
-                <td>{run.loss ?? run.metrics?.loss ?? "—"}</td>
-                <td>{new Date(run.createdAt).toLocaleString()}</td>
-                <td>
-                  <button
-                    type="button"
-                    className="secondary"
-                    onClick={() => onPromote(run.id)}
-                    disabled={panelState === "updating"}
-                  >
-                    Promote
-                  </button>
-                </td>
-              </tr>
+
+      {error && <p className="error">{error}</p>}
+
+      <section className="logs">
+        <h3>Live logs</h3>
+        {logs.length === 0 ? (
+          <p className="hint">Run training to stream log messages here.</p>
+        ) : (
+          <ul>
+            {logs.slice(0, 50).map((log, index) => (
+              <li key={`${log.timestamp}-${index}`}>
+                <span className="timestamp">{new Date(log.timestamp).toLocaleTimeString()}</span>
+                <span className="event">{log.event}</span>
+                <code>{JSON.stringify(log.payload)}</code>
+              </li>
             ))}
-            {decoratedRuns.length === 0 && (
+          </ul>
+        )}
+      </section>
+
+      <section className="runs">
+        <h3>Training runs</h3>
+        <div className="table-wrapper">
+          <table>
+            <thead>
               <tr>
-                <td colSpan={6} className="empty">
-                  No runs found. Upload a dataset and start training to see runs here.
-                </td>
+                <th>Run</th>
+                <th>Status</th>
+                <th>Acc@C</th>
+                <th>Coverage</th>
+                <th>Brier</th>
+                <th>Updated</th>
+                <th>Actions</th>
               </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-    </div>
+            </thead>
+            <tbody>
+              {sortedRuns.map((run) => {
+                const metrics = run.metrics ?? {};
+                const accuracy = metrics[primaryCoverageKey];
+                const coverageKey = primaryCoverageKey.replace("acc@", "coverage@");
+                const coverage = metrics[coverageKey];
+                return (
+                  <tr key={run.id} className={run.id === runsState.active ? "active-run" : undefined}>
+                    <td>{run.id}</td>
+                    <td>{run.status ?? "unknown"}</td>
+                    <td>{formatMetric(accuracy)}</td>
+                    <td>{formatMetric(coverage)}</td>
+                    <td>{formatMetric(metrics.brier)}</td>
+                    <td>{run.updated_at ? new Date(run.updated_at).toLocaleString() : "—"}</td>
+                    <td>
+                      <button type="button" onClick={() => handlePromote(run.id)} disabled={loading}>
+                        Promote
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+              {sortedRuns.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="empty">
+                    No runs yet. Start a training job to see results.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </section>
   );
+}
+
+function formatMetric(value: number | undefined): string {
+  if (value === undefined || Number.isNaN(value)) {
+    return "—";
+  }
+  return value.toFixed(3);
 }

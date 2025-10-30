@@ -2,22 +2,29 @@
 
 from __future__ import annotations
 
+import json
 import math
+import random
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Any, Optional, Sequence
 
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn.functional as F
 from torch import Tensor, nn
 from torch.cuda.amp import GradScaler, autocast
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader, Dataset
-import torch.nn.functional as F
 
-from backend.ml.feature_engineer import FeatureSpec, make_features
+from backend.ml.feature_engineer import (
+    FEATURE_PIPELINE_VERSION,
+    FeatureSpec,
+    build_feature_map,
+    make_features,
+)
 from backend.services.reporter import Reporter
 
 
@@ -35,6 +42,8 @@ class TrainerConfig:
     regression_weight: float = 1.0
     smooth_l1_beta: float = 0.1
     coverage_targets: Sequence[float] = (0.5, 0.75, 0.9)
+    ece_bins: int = 15
+    seed: int = 42
 
 
 class _TemporalDataset(Dataset[tuple[Tensor, Tensor, Tensor]]):
@@ -92,14 +101,21 @@ class Trainer:
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = torch.device(device)
 
+        self._set_random_seeds(self.config.seed)
+
         self.model.to(self.device)
         self._num_classes = getattr(getattr(model, "config", None), "num_classes", 3)
         self._reg_weight = self.config.regression_weight
         self._coverage_targets = tuple(self.config.coverage_targets)
+        self._ece_bins = int(self.config.ece_bins)
         self._checkpoint_dir = Path("artifacts") / "models" / self.run_id
         self._checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        self._last_metrics: Optional[dict[str, float]] = None
+        self._metrics_path = self._checkpoint_dir / "metrics.json"
+        coverage_primary = int(self._coverage_targets[0] * 100) if self._coverage_targets else 75
+        self._primary_metric_key = f"acc@{coverage_primary}"
 
-    def run(self, frame: pd.DataFrame) -> dict[str, float]:
+    def fit(self, frame: pd.DataFrame) -> dict[str, float]:
         """Execute the walk-forward training loop on ``frame``."""
 
         X, y_cls, y_reg, meta = make_features(frame, self.feature_spec)
@@ -108,10 +124,9 @@ class Trainer:
 
         order = meta.sort_values("timestamp").index.to_numpy()
         splits = self._build_splits(order)
-        self.reporter.publish(
+        self.reporter.log(
             self.run_id,
-            event="training_started",
-            payload={"splits": len(splits), "samples": int(len(order))},
+            {"event": "training_started", "splits": len(splits), "samples": int(len(order))},
         )
 
         best_score = math.inf
@@ -129,25 +144,83 @@ class Trainer:
                 best_score = metrics["val_loss"]
                 best_state = {k: v.detach().cpu().clone() for k, v in self.model.state_dict().items()}
                 torch.save({"model_state": best_state}, self._checkpoint_dir / "best.pt")
-                self.reporter.publish(
+                self.reporter.log(
                     self.run_id,
-                    event="checkpoint_saved",
-                    payload={"split": split_idx, "val_loss": best_score},
+                    {"event": "checkpoint_saved", "split": split_idx, "val_loss": best_score},
                 )
 
         if best_state is not None:
             self.model.load_state_dict(best_state)
 
-        self.reporter.publish(
+        self.reporter.log(
             self.run_id,
-            event="training_finished",
-            payload=last_metrics,
+            {"event": "training_finished", **last_metrics},
         )
+        self._last_metrics = last_metrics
+        self._write_metrics(last_metrics)
         return last_metrics
+
+    # Backwards-compatible alias used by earlier revisions
+    def run(self, frame: pd.DataFrame) -> dict[str, float]:  # pragma: no cover - compatibility
+        return self.fit(frame)
+
+    def evaluate(self, frame: pd.DataFrame) -> dict[str, float]:
+        """Evaluate the current model on a validation frame."""
+
+        X, y_cls, y_reg, meta = make_features(frame, self.feature_spec)
+        if X.empty:
+            raise ValueError("No rows available after feature engineering. Check input data.")
+
+        indices = meta.index.to_numpy()
+        loader = self._build_dataloader(X, y_cls, y_reg, indices, shuffle=False)
+        bce_loss = nn.BCEWithLogitsLoss()
+        smooth_l1 = nn.SmoothL1Loss(beta=self.config.smooth_l1_beta)
+        metrics = self._evaluate(loader, bce_loss, smooth_l1)
+        self._last_metrics = metrics
+        return metrics
+
+    def save_model_card(
+        self,
+        feature_map: Optional[dict[str, int]] = None,
+        data_ranges: Optional[dict[str, Any]] = None,
+    ) -> Path:
+        """Persist a light-weight model card alongside checkpoints."""
+
+        card = {
+            "run_id": self.run_id,
+            "feature_spec": {
+                "windows": list(self.feature_spec.windows),
+                "horizon": self.feature_spec.horizon,
+                "epsilon": self.feature_spec.epsilon,
+            },
+            "trainer_config": {
+                "batch_size": self.config.batch_size,
+                "learning_rate": self.config.learning_rate,
+                "weight_decay": self.config.weight_decay,
+                "max_epochs": self.config.max_epochs,
+                "coverage_targets": list(self._coverage_targets),
+            },
+            "metrics": self._last_metrics or {},
+            "feature_map": feature_map or build_feature_map([]),
+            "data_ranges": data_ranges or {},
+            "feature_pipeline_version": FEATURE_PIPELINE_VERSION,
+        }
+        destination = self._checkpoint_dir / "model_card.json"
+        destination.write_text(json.dumps(card, indent=2), encoding="utf-8")
+        return destination
 
     # ---------------------------------------------------------------------
     # Helper methods
     # ---------------------------------------------------------------------
+    def _set_random_seeds(self, seed: int) -> None:
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
     def _build_dataloader(
         self,
         X: pd.DataFrame,
@@ -184,6 +257,7 @@ class Trainer:
         best_val = math.inf
         patience = 0
         best_metrics: dict[str, float] = {}
+        best_score = None
 
         for epoch in range(1, self.config.max_epochs + 1):
             self.model.train()
@@ -218,13 +292,14 @@ class Trainer:
             val_metrics = self._evaluate(val_loader, bce_loss, smooth_l1)
             val_loss = val_metrics["val_loss"]
             val_metrics.update({"split": split_idx, "epoch": epoch, "train_loss": train_loss})
-            self.reporter.publish(
+            self.reporter.log(
                 self.run_id,
-                event="epoch_end",
-                payload=val_metrics,
+                {"event": "epoch_end", **val_metrics},
             )
 
-            if val_loss < best_val:
+            score = self._score_for_early_stopping(val_metrics)
+            if best_score is None or score < best_score:
+                best_score = score
                 best_val = val_loss
                 patience = 0
                 best_metrics = val_metrics
@@ -301,12 +376,35 @@ class Trainer:
         pred_idx = torch.argmax(probs, dim=-1)
         accuracy = (pred_idx == cls_idx).float().mean().item()
         mae = torch.abs(reg_pred - reg_targets).mean().item() if reg_pred.numel() else float("nan")
-        rmse = torch.sqrt(F.mse_loss(reg_pred, reg_targets)).item() if reg_pred.numel() else float("nan")
+        mse = F.mse_loss(reg_pred, reg_targets).item() if reg_pred.numel() else float("nan")
+        rmse = math.sqrt(mse) if math.isfinite(mse) else float("nan")
+
+        up_index = min(probs.shape[1] - 1, 2)
+        up_true = (cls_idx == up_index).to(torch.float32)
+        up_probs = probs[:, up_index]
+        brier = torch.mean((up_probs - up_true) ** 2).item()
+
+        auc = float("nan")
+        try:
+            from sklearn.metrics import roc_auc_score  # type: ignore
+
+            y_true = up_true.detach().cpu().numpy()
+            y_score = up_probs.detach().cpu().numpy()
+            if len(np.unique(y_true)) > 1:
+                auc = float(roc_auc_score(y_true, y_score))
+        except Exception:
+            auc = float("nan")
+
+        ece = self._expected_calibration_error(probs, cls_idx, bins=self._ece_bins)
 
         metrics: dict[str, float] = {
             "accuracy": float(accuracy),
             "mae": float(mae),
+            "mse": float(mse),
             "rmse": float(rmse),
+            "brier": float(brier),
+            "auc": float(auc),
+            "ece": float(ece),
             "temperature": float(temperature),
         }
 
@@ -327,6 +425,20 @@ class Trainer:
         preds = probs.argmax(dim=-1)
         acc = (preds[mask] == targets[mask]).float().mean().item()
         return acc, actual_cov
+
+    def _score_for_early_stopping(self, metrics: dict[str, float]) -> tuple[float, float, float]:
+        acc = float(metrics.get(self._primary_metric_key, float("nan")))
+        brier = float(metrics.get("brier", float("inf")))
+        val_loss = float(metrics.get("val_loss", float("inf")))
+        if not math.isfinite(acc):
+            acc_term = float("inf")
+        else:
+            acc_term = -acc
+        if not math.isfinite(brier):
+            brier = float("inf")
+        if not math.isfinite(val_loss):
+            val_loss = float("inf")
+        return (acc_term, brier, val_loss)
 
     def _calibrate_temperature(self, logits: Tensor, targets: Tensor) -> float:
         if logits.numel() == 0:
@@ -363,6 +475,25 @@ class Trainer:
         k = max(int(math.ceil(len(sorted_conf) * coverage)) - 1, 0)
         return float(sorted_conf[k].item())
 
+    def _expected_calibration_error(self, probs: Tensor, targets: Tensor, bins: int = 15) -> float:
+        if probs.numel() == 0:
+            return float("nan")
+        confidences, predictions = torch.max(probs, dim=-1)
+        accuracies = (predictions == targets).to(torch.float32)
+        bin_boundaries = torch.linspace(0.0, 1.0, bins + 1, device=probs.device)
+        ece = torch.zeros(1, device=probs.device)
+        for i in range(bins):
+            lower = bin_boundaries[i]
+            upper = bin_boundaries[i + 1]
+            mask = (confidences >= lower) & (confidences < upper)
+            if not torch.any(mask):
+                continue
+            bucket_conf = confidences[mask].mean()
+            bucket_acc = accuracies[mask].mean()
+            weight = mask.float().mean()
+            ece += weight * torch.abs(bucket_conf - bucket_acc)
+        return float(ece.item())
+
     def _build_splits(self, ordered_indices: np.ndarray) -> list[tuple[np.ndarray, np.ndarray]]:
         total = len(ordered_indices)
         if total < 2:
@@ -392,6 +523,16 @@ class Trainer:
             splits.append((ordered_indices[:cutoff], ordered_indices[cutoff:]))
 
         return splits
+
+
+    def _write_metrics(self, metrics: dict[str, float]) -> None:
+        serializable: dict[str, Any] = {}
+        for key, value in metrics.items():
+            if isinstance(value, (int, float)):
+                serializable[key] = float(value)
+            else:
+                serializable[key] = value
+        self._metrics_path.write_text(json.dumps(serializable, indent=2), encoding="utf-8")
 
 
 __all__ = ["Trainer", "TrainerConfig"]
