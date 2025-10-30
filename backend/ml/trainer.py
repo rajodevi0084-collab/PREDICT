@@ -38,6 +38,8 @@ class TrainerConfig:
     smooth_l1_beta: float = 0.1
     coverage_targets: Sequence[float] = (0.5, 0.75, 0.9)
     ece_bins: int = 15
+    primary_metric: str = "accuracy"
+    seed: int = 42
 
 
 class _TemporalDataset(Dataset[tuple[Tensor, Tensor, Tensor]]):
@@ -95,13 +97,15 @@ class Trainer:
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = torch.device(device)
 
-        self._set_random_seeds(self.config.seed)
+        seed = getattr(self.config, "seed", 42)
+        self._set_random_seeds(int(seed))
 
         self.model.to(self.device)
         self._num_classes = getattr(getattr(model, "config", None), "num_classes", 3)
         self._reg_weight = self.config.regression_weight
         self._coverage_targets = tuple(self.config.coverage_targets)
         self._ece_bins = int(self.config.ece_bins)
+        self._primary_metric_key = str(getattr(self.config, "primary_metric", "accuracy"))
         self._checkpoint_dir = Path("artifacts") / "models" / self.run_id
         self._checkpoint_dir.mkdir(parents=True, exist_ok=True)
         self._last_metrics: Optional[dict[str, float]] = None
@@ -258,7 +262,7 @@ class Trainer:
                 reg_target = reg_target.to(self.device)
 
                 optimizer.zero_grad(set_to_none=True)
-                with autocast(device_type=self.device.type, enabled=self.device.type == "cuda"):
+                with autocast(enabled=self.device.type == "cuda"):
                     outputs = self.model(features)
                     logits = outputs["logits_cls"]
                     reg_pred = outputs["y_reg"].squeeze(-1)
