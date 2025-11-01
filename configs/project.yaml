@@ -1,0 +1,14 @@
+# Project-level configuration for predictive tasks.
+tasks:
+  next_tick:
+    horizon_ticks: 1
+    price_source: "mid"            # options: mid, last
+    tick_size: 0.05
+    dead_zone_ticks: 1             # |Δ| < dead_zone_ticks → class=flat
+    lookback_ticks: 128
+    feature_set: "next_tick_v1"
+    model_bundle: "nt_stack_v1"
+    embargo_ticks: 256
+    purge_ticks: 4096
+    retrain_cadence: "daily"
+    eval_benchmarks: ["last_price", "ema_5"]

@@ -1,0 +1,6 @@
+latency_ms_p50_target: 5
+drift_thresholds:
+  psi_features: 0.2
+  psi_labels: 0.2
+coverage_targets:
+  conformal: "0.9 ± 0.03"
