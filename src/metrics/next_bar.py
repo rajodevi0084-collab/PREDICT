@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Iterable
+
 import numpy as np
 
 
@@ -71,4 +73,70 @@ def erf(x: np.ndarray | float) -> np.ndarray | float:
     return sign * y
 
 
-__all__ = ["mae_price", "brier_3way", "hit_rate", "dm_test", "crps_from_quantiles"]
+def lag_at_max_corr(
+    r_pred: np.ndarray,
+    r_true: np.ndarray,
+    lags: Iterable[int] | range = range(-3, 4),
+) -> int:
+    r_pred = np.asarray(r_pred, dtype=float)
+    r_true = np.asarray(r_true, dtype=float)
+    best_lag = 0
+    best_score = -np.inf
+    for lag in lags:
+        lag = int(lag)
+        if lag < 0:
+            offset = -lag
+            pred_slice = r_pred[offset:]
+            true_slice = r_true[: len(pred_slice)]
+        elif lag > 0:
+            pred_slice = r_pred[: len(r_pred) - lag]
+            true_slice = r_true[lag : lag + len(pred_slice)]
+        else:
+            pred_slice = r_pred
+            true_slice = r_true
+
+        length = min(len(pred_slice), len(true_slice))
+        if length < 2:
+            continue
+        pred_aligned = pred_slice[:length]
+        true_aligned = true_slice[:length]
+        if np.all(pred_aligned == pred_aligned[0]) or np.all(true_aligned == true_aligned[0]):
+            continue
+        corr = np.corrcoef(pred_aligned, true_aligned)[0, 1]
+        if np.isnan(corr):
+            continue
+        score = abs(corr)
+        if score > best_score or (np.isclose(score, best_score) and abs(lag) < abs(best_lag)):
+            best_score = score
+            best_lag = lag
+    return int(best_lag)
+
+
+def residual_acf1(residuals: np.ndarray) -> float:
+    residuals = np.asarray(residuals, dtype=float)
+    if residuals.size < 2:
+        return 0.0
+    residuals = residuals - np.nanmean(residuals)
+    x = residuals[:-1]
+    y = residuals[1:]
+    mask = ~np.isnan(x) & ~np.isnan(y)
+    if mask.sum() < 2:
+        return 0.0
+    x_masked = x[mask]
+    y_masked = y[mask]
+    denom = np.sqrt(np.sum(x_masked**2) * np.sum(y_masked**2))
+    if denom == 0:
+        return 0.0
+    corr = float(np.dot(x_masked, y_masked) / denom)
+    return corr
+
+
+__all__ = [
+    "mae_price",
+    "brier_3way",
+    "hit_rate",
+    "dm_test",
+    "crps_from_quantiles",
+    "lag_at_max_corr",
+    "residual_acf1",
+]

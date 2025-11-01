@@ -1,6 +1,13 @@
 import numpy as np
 
-from src.metrics.next_bar import brier_3way, dm_test, hit_rate, mae_price
+from src.metrics.next_bar import (
+    brier_3way,
+    dm_test,
+    hit_rate,
+    lag_at_max_corr,
+    mae_price,
+    residual_acf1,
+)
 
 
 def test_mae_price():
@@ -26,3 +33,14 @@ def test_dm_test():
     benchmark_err = np.array([0.2, 0.2, 0.4, 0.3])
     p_value = dm_test(model_err, benchmark_err)
     assert 0.0 <= p_value <= 1.0
+
+
+def test_lag_and_residual_metrics():
+    r_true = np.array([0.01, -0.02, 0.03, -0.01, 0.02])
+    r_pred = np.array([0.011, -0.021, 0.028, -0.009, 0.018])
+    lag = lag_at_max_corr(r_pred, r_true, lags=range(-2, 3))
+    assert lag == 0
+
+    residuals = np.array([0.1, -0.05, 0.02, -0.01])
+    acf1 = residual_acf1(residuals)
+    assert -1.0 <= acf1 <= 1.0

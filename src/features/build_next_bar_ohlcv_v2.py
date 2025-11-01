@@ -7,6 +7,8 @@ from typing import Dict, Iterable, Sequence
 
 import numpy as np
 import pandas as pd
+from sklearn.feature_selection import mutual_info_regression
+from sklearn.model_selection import KFold
 
 from ..data.price_source import typical_price
 from .spec_loader import FeatureSpec
@@ -386,7 +388,9 @@ def make_interactions(X: pd.DataFrame, spec: FeatureSpec) -> pd.DataFrame:
     interactions = {}
     for a, b in itertools.islice(combos, 0, top_k * (top_k - 1) // 2):
         interactions[f"{a}_x_{b}"] = X[a] * X[b]
-    return pd.DataFrame(interactions)
+    if not interactions:
+        return pd.DataFrame(index=X.index)
+    return pd.DataFrame(interactions, index=X.index)
 
 
 def apply_hygiene(X: pd.DataFrame, spec: FeatureSpec) -> pd.DataFrame:
@@ -420,6 +424,33 @@ def apply_hygiene(X: pd.DataFrame, spec: FeatureSpec) -> pd.DataFrame:
     return X
 
 
+def _score_features_mic(X: pd.DataFrame, y: pd.Series) -> pd.Series:
+    if X.empty:
+        return pd.Series(dtype=float)
+
+    # Use out-of-fold mutual information as a proxy for MIC/SFI ranking.
+    n_samples = len(X)
+    n_splits = min(5, n_samples)
+    X_filled = X.fillna(0.0)
+    if n_splits < 2:
+        mi = mutual_info_regression(X_filled, y, random_state=42)
+        return pd.Series(mi, index=X.columns)
+
+    scores = np.zeros(X.shape[1], dtype=float)
+    counts = np.zeros_like(scores)
+    kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
+    for train_idx, _ in kf.split(X):
+        X_train = X_filled.iloc[train_idx]
+        y_train = y.iloc[train_idx]
+        mi = mutual_info_regression(X_train, y_train, random_state=42)
+        scores += mi
+        counts += 1
+
+    counts[counts == 0] = 1
+    scores /= counts
+    return pd.Series(scores, index=X.columns)
+
+
 def rank_and_select(X: pd.DataFrame, y: pd.Series | None, spec: FeatureSpec) -> pd.DataFrame:
     keep_top_k = spec.keep_top_k()
     if keep_top_k is None or X.shape[1] <= keep_top_k:
@@ -430,18 +461,9 @@ def rank_and_select(X: pd.DataFrame, y: pd.Series | None, spec: FeatureSpec) -> 
         selected = variances.index[:keep_top_k]
         return X[selected]
 
-    corr = {}
-    y_centered = y - y.mean()
-    for col in X.columns:
-        series = X[col]
-        if series.isna().all():
-            corr[col] = 0.0
-            continue
-        covariance = np.nanmean((series - series.mean()) * y_centered)
-        denom = np.nanstd(series) * np.nanstd(y_centered)
-        corr[col] = 0.0 if denom == 0 else abs(covariance / denom)
-    ranked = sorted(corr.items(), key=lambda kv: kv[1], reverse=True)
-    selected_cols = [col for col, _ in ranked[:keep_top_k]]
+    scores = _score_features_mic(X, y)
+    ranked = scores.sort_values(ascending=False)
+    selected_cols = ranked.index[:keep_top_k]
     return X[selected_cols]
 
 
@@ -466,17 +488,17 @@ def build_feature_matrix(
 
     X = apply_hygiene(X, spec)
 
-    if not X.index.equals(df.index):
-        X = X.reindex(df.index)
+    X = X.reindex(df.index)
 
     if labels is not None and not labels.empty:
-        X = X.iloc[: len(labels)]
+        X = X.loc[labels.index]
         X = rank_and_select(X, labels.get("y_reg"), spec)
     else:
         X = rank_and_select(X, None, spec)
 
     interactions = make_interactions(X, spec)
     if not interactions.empty:
+        interactions = interactions.reindex(X.index)
         X = pd.concat([X, interactions], axis=1)
 
     X = X.replace([np.inf, -np.inf], np.nan).fillna(0.0)

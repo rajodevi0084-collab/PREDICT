@@ -15,7 +15,7 @@ tasks:
   next_bar_ohlcv:
     horizon_bars: 1
     price_source: "close"
-    dead_zone_abs_bp: 2.0          # tune 1.0–3.0
+    dead_zone_abs_bp: 1.0          # tighter neutral zone to prevent copy-forward
     lookback_bars: 128
     feature_set: "next_bar_ohlcv_v2"
     model_bundle: "nb_stack_teacher_v2"

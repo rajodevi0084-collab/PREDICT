@@ -11,7 +11,7 @@ stack:
     lr: 1e-3
     heads:
       cls: {loss: "focal", gamma: 1.5, alpha: "balanced"}
-      reg: {loss: "huber", delta: "median*1.5"}
+      reg: {loss: "huber", delta: "median*1.0"}
   tabular_lgbm:
     reg: {objective: "huber", learning_rate: 0.05, max_depth: 8,
           num_leaves: 64, n_estimators: 2500, subsample: 0.8,
