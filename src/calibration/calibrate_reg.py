@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -14,13 +15,24 @@ class LinearCalibrationModel:
     intercept: float
 
     def save(self, path: str | Path) -> None:
-        Path(path).write_text(f"{self.slope},{self.intercept}")
+        payload = {"a": float(self.slope), "b": float(self.intercept)}
+        Path(path).write_text(json.dumps(payload))
 
     @classmethod
     def load(cls, path: str | Path) -> "LinearCalibrationModel":
         raw = Path(path).read_text().strip()
-        slope_str, intercept_str = raw.split(",")
-        return cls(slope=float(slope_str), intercept=float(intercept_str))
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            slope_str, intercept_str = raw.split(",")
+            return cls(slope=float(slope_str), intercept=float(intercept_str))
+
+        slope = float(payload.get("a", payload.get("slope", 1.0)))
+        intercept = float(payload.get("b", payload.get("intercept", 0.0)))
+        return cls(slope=slope, intercept=intercept)
+
+    def as_mapping(self) -> dict[str, float]:
+        return {"a": float(self.slope), "b": float(self.intercept)}
 
 
 def fit_linear_calibration(preds: np.ndarray, targets: np.ndarray) -> LinearCalibrationModel:

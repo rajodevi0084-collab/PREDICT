@@ -44,13 +44,12 @@ def train_next_bar(
     shuffle_target_sanity(X, labels["y_reg"], tolerance=0.1, n_permutations=3)
 
     close = df["close"].astype(float)
-    actual_next_close = close.shift(-1).iloc[:-1]
-    baseline_last = close.shift(1).iloc[1 : len(labels) + 1]
-    ema5 = close.ewm(span=5, adjust=False).mean().shift(1).iloc[1 : len(labels) + 1]
-    ema5 = ema5.reindex(labels.index, method="nearest")
+    actual_next_close = close.shift(-1).loc[labels.index]
+    baseline_last = close.loc[labels.index]
+    ema5 = close.ewm(span=5, adjust=False).mean().loc[labels.index]
 
-    predicted_close = baseline_last.reindex(labels.index).fillna(method="bfill")
-    mae_vs_last = mae_price(actual_next_close.reindex(labels.index), predicted_close)
+    predicted_close = baseline_last
+    mae_vs_last = mae_price(actual_next_close, predicted_close)
 
     # Calibrators are placeholders for now.
     cls_calibrator = TemperatureScaler()
@@ -73,6 +72,7 @@ def train_next_bar(
         labels["y_cls"],
         conformal_bands[:, [0, 2]],
         report_dir,
+        reg_calibration=reg_calibrator.model,
     )
 
     splits = list(

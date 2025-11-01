@@ -36,26 +36,23 @@ def build_next_bar_targets(
     if price.isna().any():
         raise ValueError("Price column contains NaNs; cannot compute next-bar targets")
 
-    next_price = price.shift(-1)
-    y_reg = np.log(next_price / price)
+    y_reg = np.log(price.shift(-1) / price)
     threshold = abs(dead_zone_abs_bp) / 1e4
 
-    y_cls = np.sign(y_reg).astype(float)
-    dead_zone_mask = y_reg.abs() < threshold
-    y_cls[dead_zone_mask] = 0.0
-    y_cls[~dead_zone_mask] = np.sign(y_reg[~dead_zone_mask])
+    y_cls = pd.Series(np.sign(y_reg), index=y_reg.index)
+    if threshold > 0:
+        neutral = y_reg.abs() < threshold
+        y_cls.loc[neutral] = 0
 
-    # Drop the final bar where the shift introduced NaNs.
-    y_reg = y_reg.iloc[:-1]
-    y_cls = y_cls.iloc[:-1].fillna(0).astype(int)
+    y_reg = y_reg.dropna()
+    y_cls = y_cls.loc[y_reg.index].fillna(0).astype(int)
 
-    labels = pd.DataFrame({"y_reg": y_reg, "y_cls": y_cls}, index=df.index[:-1])
+    labels = pd.DataFrame({"y_reg": y_reg, "y_cls": y_cls}, index=y_reg.index)
 
     if labels.isna().any().any():
         raise ValueError("Constructed next-bar targets contain NaNs")
 
-    # Ensure the final timestamp from the original data is not present in targets.
-    if len(labels.index.intersection(df.index[-1:])) != 0:
+    if labels.index.max() == df.index.max():
         raise NextBarAlignmentError("Next-bar targets should not include the final bar")
 
     return labels
