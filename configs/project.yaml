@@ -1,7 +1,7 @@
 # Project-level configuration for predictive tasks.
 tasks:
   next_tick:
-    horizon_ticks: 1
+    horizon_ticks: 1              # H=1 enforced
     price_source: "mid"            # options: mid, last
     tick_size: 0.05
     dead_zone_ticks: 1             # |Δ| < dead_zone_ticks → class=flat
@@ -13,7 +13,7 @@ tasks:
     retrain_cadence: "daily"
     eval_benchmarks: ["last_price", "ema_5"]
   next_bar_ohlcv:
-    horizon_bars: 1
+    horizon_bars: 1               # H=1 enforced
     price_source: "close"
     dead_zone_abs_bp: 1.0          # tighter neutral zone to prevent copy-forward
     lookback_bars: 128

@@ -1,4 +1,4 @@
-"""Label generation for next-bar OHLCV prediction."""
+"""Label generation for next-bar OHLCV prediction with strict H=1 shift."""
 
 from __future__ import annotations
 
@@ -6,56 +6,39 @@ import numpy as np
 import pandas as pd
 
 
-class NextBarAlignmentError(RuntimeError):
-    """Raised when next-bar target alignment invariants are violated."""
-
-
 def build_next_bar_targets(
-    df: pd.DataFrame,
+    df_ohlcv: pd.DataFrame,
     *,
-    price_col: str = "close",
-    dead_zone_abs_bp: float = 0.0,
-) -> pd.DataFrame:
-    """Return regression and classification targets for the next bar.
+    dead_zone_abs_bp: float,
+    horizon_bars: int = 1,
+) -> tuple[pd.Series, pd.Series]:
+    """Return log-return regression and classification targets for H=1."""
 
-    Parameters
-    ----------
-    df:
-        Input dataframe indexed by bar timestamp and containing the ``price_col``.
-    price_col:
-        Column to use for price, defaults to ``"close"``.
-    dead_zone_abs_bp:
-        Absolute dead-zone expressed in basis points. Classification labels within
-        ``±dead_zone_abs_bp`` are mapped to the neutral class ``0``.
-    """
+    if "close" not in df_ohlcv.columns:
+        raise KeyError("'close' column is required to build next-bar targets")
 
-    if price_col not in df.columns:
-        raise KeyError(f"Price column '{price_col}' not found in dataframe")
+    if horizon_bars != 1:
+        raise AssertionError("This run must be H=1")
 
-    price = df[price_col].astype(float)
-    if price.isna().any():
-        raise ValueError("Price column contains NaNs; cannot compute next-bar targets")
+    close = df_ohlcv["close"].astype(float)
+    if close.isna().any():
+        raise ValueError("Close column contains NaNs; cannot build targets")
 
-    y_reg = np.log(price.shift(-1) / price)
+    y_reg_full = np.log(close.shift(-horizon_bars) / close)
+
     threshold = abs(dead_zone_abs_bp) / 1e4
-
-    y_cls = pd.Series(np.sign(y_reg), index=y_reg.index)
+    y_cls_full = np.sign(y_reg_full)
     if threshold > 0:
-        neutral = y_reg.abs() < threshold
-        y_cls.loc[neutral] = 0
+        neutral_mask = y_reg_full.abs() < threshold
+        y_cls_full = y_cls_full.mask(neutral_mask, 0.0)
 
-    y_reg = y_reg.dropna()
-    y_cls = y_cls.loc[y_reg.index].fillna(0).astype(int)
+    y_reg = y_reg_full.dropna()
+    y_cls = y_cls_full.loc[y_reg.index].fillna(0.0).astype(int)
 
-    labels = pd.DataFrame({"y_reg": y_reg, "y_cls": y_cls}, index=y_reg.index)
+    if not y_reg.index.equals(y_cls.index):
+        raise ValueError("Classification targets misaligned with regression targets")
 
-    if labels.isna().any().any():
-        raise ValueError("Constructed next-bar targets contain NaNs")
-
-    if labels.index.max() == df.index.max():
-        raise NextBarAlignmentError("Next-bar targets should not include the final bar")
-
-    return labels
+    return y_reg, y_cls
 
 
-__all__ = ["build_next_bar_targets", "NextBarAlignmentError"]
+__all__ = ["build_next_bar_targets"]

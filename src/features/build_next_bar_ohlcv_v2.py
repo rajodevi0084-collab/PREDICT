@@ -14,6 +14,24 @@ from ..data.price_source import typical_price
 from .spec_loader import FeatureSpec
 
 
+def assert_past_only(X: pd.DataFrame, price_index: pd.Index) -> None:
+    """Ensure feature timestamps never extend beyond observed prices."""
+
+    if X.empty:
+        raise ValueError("Feature matrix is empty")
+
+    price_index = pd.Index(price_index)
+    if not X.index.is_monotonic_increasing:
+        raise AssertionError("Feature index must be non-decreasing")
+
+    if not X.index.isin(price_index).all():
+        missing = X.index.difference(price_index)
+        raise AssertionError(f"Feature index contains future timestamps: {missing[:5].tolist()}")
+
+    if X.index.max() > price_index.max():
+        raise AssertionError("Feature index extends beyond available price data")
+
+
 def _safe_log_ratio(num: pd.Series, den: pd.Series) -> pd.Series:
     ratio = num / den.replace(0, np.nan)
     out = np.log(ratio.replace(0, np.nan))
@@ -470,8 +488,6 @@ def rank_and_select(X: pd.DataFrame, y: pd.Series | None, spec: FeatureSpec) -> 
 def build_feature_matrix(
     df: pd.DataFrame,
     spec: FeatureSpec,
-    *,
-    labels: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Construct the feature matrix using the ``next_bar_ohlcv_v2`` recipe."""
 
@@ -489,12 +505,7 @@ def build_feature_matrix(
     X = apply_hygiene(X, spec)
 
     X = X.reindex(df.index)
-
-    if labels is not None and not labels.empty:
-        X = X.loc[labels.index]
-        X = rank_and_select(X, labels.get("y_reg"), spec)
-    else:
-        X = rank_and_select(X, None, spec)
+    assert_past_only(X, df.index)
 
     interactions = make_interactions(X, spec)
     if not interactions.empty:
@@ -516,5 +527,6 @@ __all__ = [
     "make_interactions",
     "apply_hygiene",
     "rank_and_select",
+    "assert_past_only",
     "build_feature_matrix",
 ]

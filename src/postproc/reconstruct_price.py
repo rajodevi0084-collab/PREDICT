@@ -25,18 +25,29 @@ def reconstruct_close(
     """Return the next close estimate given a log-return prediction."""
 
     if isinstance(close_price, pd.Series):
+        base = close_price.astype(float)
         aligned = y_reg_hat
         if isinstance(aligned, pd.Series):
-            aligned = aligned.reindex(close_price.index)
+            aligned = aligned.reindex(base.index)
         y_reg_arr = np.asarray(aligned, dtype=float)
-        next_close = close_price.to_numpy(dtype=float) * np.exp(y_reg_arr)
-        return pd.Series(next_close, index=close_price.index, name=close_price.name)
+        if not np.isfinite(y_reg_arr).all():
+            raise AssertionError("Regression predictions must be finite")
+        next_close = base.to_numpy(dtype=float) * np.exp(y_reg_arr)
+        if not np.isfinite(next_close).all():
+            raise AssertionError("Reconstructed close contains non-finite values")
+        return pd.Series(next_close, index=base.index, name=base.name)
 
     close_arr = np.asarray(close_price, dtype=float)
     y_reg_arr = np.asarray(y_reg_hat, dtype=float)
+    if not np.isfinite(close_arr).all() or not np.isfinite(y_reg_arr).all():
+        raise AssertionError("Inputs to reconstruct_close must be finite")
     result = close_arr * np.exp(y_reg_arr)
     if np.isscalar(close_price):
+        if not np.isfinite(result):
+            raise AssertionError("Reconstructed close is not finite")
         return float(result)
+    if not np.isfinite(result).all():
+        raise AssertionError("Reconstructed close contains non-finite values")
     return result
 
 

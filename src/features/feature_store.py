@@ -26,10 +26,24 @@ def compute_namespace(spec_name: str) -> str:
 def compute_version_hash(
     *,
     spec_hash: str,
-    start: str | None,
-    end: str | None,
+    symbol: str,
+    horizon_bars: int,
+    lookback_bars: int,
+    split_id: str | None,
 ) -> str:
-    payload = json.dumps({"spec": spec_hash, "start": start, "end": end}, sort_keys=True)
+    if horizon_bars != 1:
+        raise ValueError("Feature cache invalid for horizon_bars != 1")
+
+    payload = json.dumps(
+        {
+            "spec": spec_hash,
+            "symbol": symbol,
+            "horizon_bars": int(horizon_bars),
+            "lookback_bars": int(lookback_bars),
+            "split_id": split_id,
+        },
+        sort_keys=True,
+    )
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
 
 

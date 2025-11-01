@@ -43,4 +43,4 @@ groups:
     winsor_sigma: 5
     vol_standardize: true
     drop_corr_gt: 0.97
-keep_top_k: 300
+keep_top_k: 256  # keep selection high but bounded
