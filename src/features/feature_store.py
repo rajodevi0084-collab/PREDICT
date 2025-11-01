@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from __future__ import annotations
+
+import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +13,24 @@ from typing import Optional
 import pandas as pd
 
 _BASE_DIR = Path("data/feature_store")
+
+
+def compute_namespace(spec_name: str) -> str:
+    """Return a namespace string for the provided feature spec."""
+
+    if spec_name == "next_bar_ohlcv_v2":
+        return "next_bar_ohlcv_v2"
+    return spec_name
+
+
+def compute_version_hash(
+    *,
+    spec_hash: str,
+    start: str | None,
+    end: str | None,
+) -> str:
+    payload = json.dumps({"spec": spec_hash, "start": start, "end": end}, sort_keys=True)
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
 
 
 @dataclass
@@ -53,4 +74,11 @@ def has_features(handle: FeatureHandle) -> bool:
     return (handle.path / "features.parquet").exists()
 
 
-__all__ = ["FeatureHandle", "store_features", "load_features", "has_features"]
+__all__ = [
+    "FeatureHandle",
+    "store_features",
+    "load_features",
+    "has_features",
+    "compute_namespace",
+    "compute_version_hash",
+]

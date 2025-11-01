@@ -1,4 +1,4 @@
-"""Classification calibration utilities."""
+"""Temperature scaling for classification logits."""
 
 from __future__ import annotations
 
@@ -9,39 +9,52 @@ import numpy as np
 
 
 @dataclass
+class TemperatureCalibration:
+    temperature: float
+
+    def save(self, path: str | Path) -> None:
+        path = Path(path)
+        path.write_text(str(self.temperature))
+
+    @classmethod
+    def load(cls, path: str | Path) -> "TemperatureCalibration":
+        value = float(Path(path).read_text().strip())
+        return cls(temperature=value)
+
+
+def _nll_temperature(temperature: float, logits: np.ndarray, labels: np.ndarray) -> float:
+    if temperature <= 0:
+        return np.inf
+    scaled = logits / temperature
+    log_probs = scaled - scaled.max(axis=1, keepdims=True)
+    log_probs = log_probs - np.log(np.exp(log_probs).sum(axis=1, keepdims=True))
+    idx = labels.astype(int)
+    return -float(np.mean(log_probs[np.arange(len(labels)), idx]))
+
+
+def temperature_scale(logits: np.ndarray, labels: np.ndarray) -> TemperatureCalibration:
+    logits = np.asarray(logits, dtype=float)
+    labels = np.asarray(labels, dtype=int)
+    candidates = np.exp(np.linspace(np.log(0.1), np.log(10.0), 50))
+    losses = [_nll_temperature(t, logits, labels) for t in candidates]
+    best_idx = int(np.nanargmin(losses))
+    return TemperatureCalibration(temperature=float(candidates[best_idx]))
+
+
+def apply_temperature(logits: np.ndarray, calibration: TemperatureCalibration) -> np.ndarray:
+    return logits / calibration.temperature
+
+
 class TemperatureScaler:
-    temperature: float = 1.0
+    def __init__(self, temperature: float = 1.0) -> None:
+        self.calibration = TemperatureCalibration(temperature=temperature)
 
     def fit(self, logits: np.ndarray, labels: np.ndarray) -> "TemperatureScaler":
-        logits = np.asarray(logits, dtype=float)
-        labels = np.asarray(labels, dtype=int)
-        self.temperature = _grid_search_temperature(logits, labels)
+        self.calibration = temperature_scale(logits, labels)
         return self
 
     def transform(self, logits: np.ndarray) -> np.ndarray:
-        return logits / self.temperature
-
-    def save(self, path: str | Path) -> None:
-        Path(path).write_text(f"{self.temperature:.6f}\n", encoding="utf-8")
+        return apply_temperature(np.asarray(logits, dtype=float), self.calibration)
 
 
-def _grid_search_temperature(logits: np.ndarray, labels: np.ndarray) -> float:
-    best_temp = 1.0
-    best_loss = np.inf
-    for temp in np.linspace(0.5, 5.0, num=50):
-        scaled = logits / temp
-        loss = _nll(scaled, labels)
-        if loss < best_loss:
-            best_loss = loss
-            best_temp = temp
-    return best_temp
-
-
-def _nll(logits: np.ndarray, labels: np.ndarray) -> float:
-    exp_logits = np.exp(logits - logits.max(axis=1, keepdims=True))
-    probs = exp_logits / exp_logits.sum(axis=1, keepdims=True)
-    idx = (np.arange(len(labels)), labels)
-    return float(-np.log(probs[idx]).mean())
-
-
-__all__ = ["TemperatureScaler"]
+__all__ = ["TemperatureCalibration", "temperature_scale", "apply_temperature", "TemperatureScaler"]

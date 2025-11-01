@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 
+from .next_bar_service import predict as predict_next_bar
 from .next_tick_service import predict as predict_next_tick
 
 router = APIRouter(prefix="/predict", tags=["predict"])
@@ -13,5 +14,13 @@ router = APIRouter(prefix="/predict", tags=["predict"])
 def next_tick(payload: dict) -> dict:
     try:
         return predict_next_tick(payload)
+    except KeyError as exc:  # pragma: no cover - defensive
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/next-bar")
+def next_bar(payload: dict) -> dict:
+    try:
+        return predict_next_bar(payload)
     except KeyError as exc:  # pragma: no cover - defensive
         raise HTTPException(status_code=400, detail=str(exc)) from exc

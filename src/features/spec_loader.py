@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from importlib import import_module
+from types import ModuleType
 from typing import Any, Dict, Iterable, Iterator
 
 import yaml
@@ -46,4 +48,24 @@ def iter_feature_groups(spec: FeatureSpec) -> Iterator[tuple[str, Any]]:
         yield key, value
 
 
-__all__ = ["FeatureSpec", "load_feature_spec", "iter_feature_groups"]
+_FEATURE_BUILDERS = {
+    "next_tick_v1": "src.features.build_next_tick_v1",
+    "next_bar_ohlcv_v2": "src.features.build_next_bar_ohlcv_v2",
+}
+
+
+def resolve_feature_builder(name: str) -> ModuleType:
+    """Return the module implementing the requested feature builder."""
+
+    if name not in _FEATURE_BUILDERS:
+        raise KeyError(f"No feature builder registered for spec '{name}'")
+    module_path = _FEATURE_BUILDERS[name]
+    return import_module(module_path)
+
+
+__all__ = [
+    "FeatureSpec",
+    "load_feature_spec",
+    "iter_feature_groups",
+    "resolve_feature_builder",
+]

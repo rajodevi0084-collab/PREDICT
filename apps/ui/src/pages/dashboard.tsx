@@ -1,7 +1,8 @@
 import { useState } from "react";
+import { NextBarPanel } from "../components/NextBarPanel";
 import { NextTickPanel } from "../components/NextTickPanel";
 
-const tabs = ["Overview", "Next-Tick"] as const;
+const tabs = ["Overview", "Next-Tick", "Next-Bar (OHLCV)"] as const;
 type Tab = (typeof tabs)[number];
 
 export default function DashboardPage() {
@@ -19,6 +20,7 @@ export default function DashboardPage() {
       <section>
         {activeTab === "Overview" && <p>Select a tab to view details.</p>}
         {activeTab === "Next-Tick" && <NextTickPanel symbol="BTCUSD" />}
+        {activeTab === "Next-Bar (OHLCV)" && <NextBarPanel symbol="BTCUSD" />}
       </section>
     </div>
   );

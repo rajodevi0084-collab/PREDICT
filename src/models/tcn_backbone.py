@@ -33,7 +33,7 @@ def _tcn_block(in_channels: int, out_channels: int, kernel_size: int, dilation: 
 
 
 class TCN(nn.Module):
-    """Temporal convolutional network with two task-specific heads."""
+    """Temporal convolutional network with detachable heads."""
 
     def __init__(
         self,
@@ -43,8 +43,19 @@ class TCN(nn.Module):
         blocks: int,
         kernel: int,
         dropout: float,
+        *,
+        n_classes: int = 3,
+        weight_decay: float | None = None,
     ) -> None:
         super().__init__()
+        self.lookback = lookback
+        self.channels = channels
+        self.blocks = blocks
+        self.kernel = kernel
+        self.dropout = dropout
+        self.n_classes = n_classes
+        self.weight_decay = weight_decay
+
         layers = []
         in_channels = n_features
         for i in range(blocks):
@@ -52,15 +63,35 @@ class TCN(nn.Module):
             layers.append(_tcn_block(in_channels, channels, kernel, dilation, dropout))
             in_channels = channels
         self.backbone = nn.Sequential(*layers)
-        self.head_cls = nn.Sequential(nn.Conv1d(channels, 3, kernel_size=1))
-        self.head_reg = nn.Sequential(nn.Conv1d(channels, 1, kernel_size=1))
+        self.head_cls = nn.Conv1d(channels, n_classes, kernel_size=1)
+        self.head_reg = nn.Conv1d(channels, 1, kernel_size=1)
+
+    def forward_features(self, x: torch.Tensor) -> torch.Tensor:
+        if x.dim() != 3:
+            raise ValueError("Input tensor must be (batch, features, lookback)")
+        return self.backbone(x)
+
+    def forward_cls(self, x: torch.Tensor) -> torch.Tensor:
+        latent = self.forward_features(x)
+        logits = self.head_cls(latent).mean(dim=-1)
+        return logits
+
+    def forward_reg(self, x: torch.Tensor) -> torch.Tensor:
+        latent = self.forward_features(x)
+        reg = self.head_reg(latent).mean(dim=-1)
+        return reg.squeeze(-1)
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        # x: (batch, features, lookback)
-        latent = self.backbone(x)
-        cls = self.head_cls(latent).mean(dim=-1)
-        reg = self.head_reg(latent).mean(dim=-1)
-        return cls, reg.squeeze(1)
+        return self.forward_cls(x), self.forward_reg(x)
+
+    def parameter_groups(self) -> list[dict[str, object]]:
+        if self.weight_decay is None:
+            return [{"params": self.parameters()}]
+        return [
+            {"params": self.backbone.parameters(), "weight_decay": self.weight_decay},
+            {"params": self.head_cls.parameters(), "weight_decay": 0.0},
+            {"params": self.head_reg.parameters(), "weight_decay": 0.0},
+        ]
 
 
 __all__ = ["TCN"]

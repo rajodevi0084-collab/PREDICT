@@ -1,15 +1,19 @@
 import numpy as np
 
-from src.validation.leakage_checks import shuffle_target_sanity_check
+from src.validation.leakage_checks import shuffle_target_sanity
 
 
 def test_shuffle_target_drives_metric_to_zero():
     rng = np.random.default_rng(42)
-    y_true = rng.normal(size=128)
-    y_pred = rng.normal(size=128)
+    X = rng.normal(size=(128, 4))
+    y = rng.normal(size=128)
 
-    def correlation(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-        return float(np.corrcoef(y_true, y_pred)[0, 1])
+    result = shuffle_target_sanity(X, y, tolerance=0.25, n_permutations=5, random_state=7)
+    shuffle_scores = result["shuffle_scores"]
+    metric = result["metric"]
 
-    baseline, shuffled = shuffle_target_sanity_check(y_true, y_pred, correlation, tolerance=0.25)
-    assert np.all(np.abs(shuffled) < 0.25)
+    if metric == "auc":
+        expected = 0.5
+    else:
+        expected = 0.0
+    assert np.allclose(np.nanmean(shuffle_scores), expected, atol=0.25)

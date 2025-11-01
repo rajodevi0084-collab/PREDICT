@@ -13,6 +13,15 @@ export interface NextTickPrediction {
   bands: number[];
 }
 
+export interface NextBarPrediction {
+  p_down: number;
+  p_flat: number;
+  p_up: number;
+  y_reg_hat: number;
+  next_close_hat: number;
+  bands: number[];
+}
+
 export async function getNextTick(symbol: string): Promise<NextTickPrediction> {
   const response = await fetch("/prediction/next-tick", {
     method: "POST",
@@ -23,4 +32,16 @@ export async function getNextTick(symbol: string): Promise<NextTickPrediction> {
     throw new Error(`Failed to fetch next-tick prediction: ${response.status}`);
   }
   return (await response.json()) as NextTickPrediction;
+}
+
+export async function getNextBar(symbol: string): Promise<NextBarPrediction> {
+  const response = await fetch("/prediction/next-bar", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ symbol }),
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to fetch next-bar prediction: ${response.status}`);
+  }
+  return (await response.json()) as NextBarPrediction;
 }

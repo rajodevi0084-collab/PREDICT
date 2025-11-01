@@ -17,4 +17,12 @@ def reconstruct(mid_price: float | np.ndarray, y_reg_hat: float | np.ndarray, ti
     return snapped
 
 
-__all__ = ["reconstruct"]
+def reconstruct_close(close_price: float | np.ndarray, y_reg_hat: float | np.ndarray) -> float | np.ndarray:
+    """Return the next close estimate given a log-return prediction."""
+
+    close_arr = np.asarray(close_price, dtype=float)
+    y_reg_arr = np.asarray(y_reg_hat, dtype=float)
+    return close_arr * np.exp(y_reg_arr)
+
+
+__all__ = ["reconstruct", "reconstruct_close"]

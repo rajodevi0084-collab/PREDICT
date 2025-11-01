@@ -6,8 +6,23 @@ import torch
 from torch import nn
 
 
-def make_focal(gamma: float = 2.0, alpha: float | None = None) -> nn.Module:
+def _parse_alpha(alpha: float | str | None) -> float | None:
+    if alpha is None:
+        return None
+    if isinstance(alpha, str):
+        if alpha.lower() == "balanced":
+            return 1.0
+        try:
+            return float(alpha)
+        except ValueError as exc:  # pragma: no cover - defensive
+            raise ValueError(f"Unsupported alpha value '{alpha}'") from exc
+    return float(alpha)
+
+
+def make_focal(gamma: float = 2.0, alpha: float | str | None = None) -> nn.Module:
     """Return a focal loss module for multi-class logits."""
+
+    alpha_value = _parse_alpha(alpha)
 
     class FocalLoss(nn.Module):
         def __init__(self, gamma: float, alpha: float | None) -> None:
@@ -25,11 +40,23 @@ def make_focal(gamma: float = 2.0, alpha: float | None = None) -> nn.Module:
             loss = -torch.log(pt.clamp_min(1e-8)) * focal
             return loss.mean()
 
-    return FocalLoss(gamma, alpha)
+    return FocalLoss(gamma, alpha_value)
 
 
-def huber(delta: float = 1.0) -> nn.Module:
-    return nn.SmoothL1Loss(beta=delta)
+def _parse_delta(delta: float | str) -> float:
+    if isinstance(delta, str):
+        if delta.startswith("median*"):
+            factor = float(delta.split("*")[1])
+            return factor
+        try:
+            return float(delta)
+        except ValueError as exc:  # pragma: no cover - defensive
+            raise ValueError(f"Unsupported delta value '{delta}'") from exc
+    return float(delta)
+
+
+def huber(delta: float | str = 1.0) -> nn.Module:
+    return nn.SmoothL1Loss(beta=_parse_delta(delta))
 
 
 __all__ = ["make_focal", "huber"]
