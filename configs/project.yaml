@@ -12,3 +12,17 @@ tasks:
     purge_ticks: 4096
     retrain_cadence: "daily"
     eval_benchmarks: ["last_price", "ema_5"]
+  next_bar_ohlcv:
+    horizon_bars: 1
+    price_source: "close"
+    dead_zone_abs_bp: 2.0          # tune 1.0–3.0
+    lookback_bars: 128
+    feature_set: "next_bar_ohlcv_v2"
+    model_bundle: "nb_stack_teacher_v2"
+    embargo_bars: 10
+    purge_bars: 200
+    retrain_cadence: "daily"
+    eval_benchmarks: ["last_close","ema_5"]
+    cost_model:
+      spread_bp_proxy_k: 0.35       # cost ≈ k * roll σ in bp
+    latency_budget_ms: 20               # for teacher offline; student will be ≤5ms

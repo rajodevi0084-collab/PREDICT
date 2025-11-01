@@ -1,0 +1,40 @@
+stack:
+  teacher_seq:
+    type: "tcn"
+    lookback: 128
+    channels: 384           # ~6–7M params
+    blocks: 6
+    kernel: 5
+    dropout: 0.10
+    weight_decay: 1e-4
+    optimizer: "adamw"
+    lr: 1e-3
+    heads:
+      cls: {loss: "focal", gamma: 1.5, alpha: "balanced"}
+      reg: {loss: "huber", delta: "median*1.5"}
+  tabular_lgbm:
+    reg: {objective: "huber", learning_rate: 0.05, max_depth: 8,
+          num_leaves: 64, n_estimators: 2500, subsample: 0.8,
+          colsample_bytree: 0.8, min_child_samples: 80}
+    cls: {objective: "multiclass_3way", learning_rate: 0.05,
+          max_depth: 8, n_estimators: 2000, class_weight: "balanced",
+          label_smoothing: 0.05}
+  blender:
+    type: "ridge"
+    inputs: ["teacher_seq.cls","teacher_seq.reg","tabular_lgbm.cls","tabular_lgbm.reg"]
+    weight_metric: "mae_inverse"
+calibration: {cls: "temperature", reg: "linear"}
+conformal: {enabled: true, coverage: 0.90}
+distillation:
+  student_seq:
+    type: "tcn"
+    lookback: 128
+    channels: 128           # ~0.7M params
+    blocks: 4
+    kernel: 5
+    dropout: 0.10
+    weight_decay: 1e-4
+    optimizer: "adamw"
+    lr: 1e-3
+  loss_weights: {soft_cls: 0.5, soft_reg: 0.3, hard_reg: 0.2}
+  quantize_int8: true

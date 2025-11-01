@@ -19,17 +19,17 @@ def rolling_windows(
     train_size: int,
     test_size: int,
     *,
-    purge_ticks: int = 0,
-    embargo_ticks: int = 0,
+    purge_bars: int = 0,
+    embargo_bars: int = 0,
 ) -> Iterator[RollingSplit]:
     n = len(index)
     start = 0
     while True:
         train_start = start
         train_end = train_start + train_size
-        test_start = train_end + purge_ticks
+        test_start = train_end + purge_bars
         test_end = test_start + test_size
-        embargo_end = test_end + embargo_ticks
+        embargo_end = test_end + embargo_bars
 
         if embargo_end > n:
             break
@@ -39,7 +39,7 @@ def rolling_windows(
             test_indices=list(range(test_start, test_end)),
         )
 
-        start += test_size
+        start = test_end + embargo_bars
 
 
 __all__ = ["RollingSplit", "rolling_windows"]

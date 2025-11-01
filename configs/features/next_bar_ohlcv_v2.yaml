@@ -1,0 +1,46 @@
+groups:
+  returns_trend:
+    log_returns_close_lags: [1,2,3,4,5,8,12,16,24,32,48,64,96,128]
+    log_returns_high_low_typical: true
+    ema_gaps_close: [3,5,8,10,12,20,30,50,100]
+    ema_gaps_typical: [5,10,20,50]
+    zscore_price_vs_ema: [10,20,50,100]
+  volatility_range:
+    realized_vol_windows: [8,16,32,64,128]
+    atr_windows: [5,14,28]
+    range_pct_windows: [1,5,20]
+    park_gk_rs_yz: true
+  gaps_session:
+    open_to_prev_close_gap: true
+    session_bucket: [open,mid,close]
+    dow_dom_month: true
+    expiry_distance: true
+  volume_moneyflow:
+    volume_returns_lags: [1,2,4,8,16,32,64]
+    volume_zscore_windows: [20,60]
+    obv: true
+    mfi_windows: [7,14]
+    cmf_windows: [20]
+    price_volume_corr_windows: [20,60]
+  oscillators_light:
+    rsi_windows: [7,14,28]
+    stoch_kd: [9,3]
+    adx_windows: [14]
+    cci_windows: [20]
+    williams_r_windows: [14]
+  patterns:
+    candle_ratios: true
+    engulf_harami_nr4_nr7_inside_outside: true
+    pattern_counts_windows: [20,60,120]
+  spectral_fractal:
+    dct_lowk: 16
+    fft_lowk: 16
+    wavelet_db: [2,4]
+    hurst_dfa_entropy: true
+  interactions:
+    topk_pairwise: 200            # after initial ranking
+  hygiene:
+    winsor_sigma: 5
+    vol_standardize: true
+    drop_corr_gt: 0.97
+keep_top_k: 300

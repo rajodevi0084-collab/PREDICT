@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Callable, Iterable
+from typing import Iterable
 
 import numpy as np
 import pandas as pd
@@ -41,44 +41,97 @@ def assert_no_future_features(X: pd.DataFrame, y_index: pd.Index) -> None:
         raise AssertionError("Detected future-looking features relative to labels")
 
 
-def shuffle_target_sanity_check(
-    y_true: Iterable[float],
-    y_pred: Iterable[float],
-    metric: Callable[[np.ndarray, np.ndarray], float],
+def shuffle_target_sanity(
+    X: pd.DataFrame | np.ndarray,
+    y: Iterable[float],
     *,
-    tolerance: float = 0.05,
+    tolerance: float = 0.02,
     n_permutations: int = 10,
     random_state: int | None = 0,
-) -> tuple[float, np.ndarray]:
-    """Evaluate metric stability under target shuffling.
+) -> dict[str, float | np.ndarray]:
+    """Ensure that shuffled targets yield near-zero skill.
 
-    Returns the baseline metric and the array of scores obtained after shuffling
-    ``y_true``. If the shuffled scores exhibit systematic skill, an assertion is
-    raised. This guard helps reveal inadvertent leakage or data misalignment.
+    The routine fits a simple ridge regressor (or logistic scorer for binary
+    targets) on the provided features and evaluates the signal strength for the
+    true targets and for multiple shuffled permutations. If the shuffled metric
+    consistently exceeds ``tolerance``, the function raises ``AssertionError``.
     """
 
-    y_true = np.asarray(list(y_true), dtype=float)
-    y_pred = np.asarray(list(y_pred), dtype=float)
+    if isinstance(X, pd.DataFrame):
+        X_arr = X.to_numpy(dtype=float, copy=False)
+    else:
+        X_arr = np.asarray(X, dtype=float)
 
-    if y_true.shape != y_pred.shape:
-        raise ValueError("y_true and y_pred must have identical shape")
+    if X_arr.ndim != 2:
+        raise ValueError("Feature matrix must be 2-D")
 
-    baseline = metric(y_true, y_pred)
+    y_arr = np.asarray(list(y), dtype=float)
+    if y_arr.ndim != 1:
+        raise ValueError("Target array must be 1-D")
+    if X_arr.shape[0] != y_arr.shape[0]:
+        raise ValueError("Feature rows must match target length")
+
+    binary_mask = np.isin(np.unique(y_arr), [0.0, 1.0]).all() or np.isin(
+        np.unique(y_arr), [-1.0, 0.0, 1.0]
+    ).all()
+
+    X_aug = np.column_stack([np.ones(X_arr.shape[0]), X_arr])
+
+    def _ridge_solution(target: np.ndarray) -> np.ndarray:
+        ridge = 1e-6 * np.eye(X_aug.shape[1])
+        ridge[0, 0] = 0.0  # do not regularise bias
+        gram = X_aug.T @ X_aug + ridge
+        coef = np.linalg.solve(gram, X_aug.T @ target)
+        return X_aug @ coef
+
+    def _r2(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+        ss_tot = np.sum((y_true - y_true.mean()) ** 2)
+        if ss_tot <= 0:
+            return 0.0
+        ss_res = np.sum((y_true - y_pred) ** 2)
+        return float(1.0 - ss_res / ss_tot)
+
+    def _auc(y_true: np.ndarray, scores: np.ndarray) -> float:
+        # Map {-1,0,1} -> {0,0,1}
+        y_bin = (y_true > 0).astype(float)
+        order = np.argsort(scores)
+        ranked_y = y_bin[order]
+        cum_pos = np.cumsum(ranked_y)
+        total_pos = cum_pos[-1]
+        total_neg = len(y_bin) - total_pos
+        if total_pos == 0 or total_neg == 0:
+            return 0.5
+        # Mann–Whitney U formulation of AUC.
+        rank_sum = np.sum(np.nonzero(ranked_y)[0] + 1)
+        auc = (rank_sum - total_pos * (total_pos + 1) / 2) / (total_pos * total_neg)
+        return float(auc)
+
+    def _score(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+        if binary_mask:
+            logits = y_pred
+            probs = 1.0 / (1.0 + np.exp(-logits))
+            return _auc(y_true, probs)
+        return _r2(y_true, y_pred)
+
+    baseline_pred = _ridge_solution(y_arr)
+    baseline_score = _score(y_arr, baseline_pred)
 
     rng = np.random.default_rng(random_state)
     perm_scores = []
     for _ in range(n_permutations):
-        permuted = rng.permutation(y_true)
-        score = metric(permuted, y_pred)
-        perm_scores.append(score)
+        permuted = rng.permutation(y_arr)
+        perm_pred = _ridge_solution(permuted)
+        perm_scores.append(_score(permuted, perm_pred))
 
     perm_scores_arr = np.asarray(perm_scores, dtype=float)
-    if np.nanmean(np.abs(perm_scores_arr)) > tolerance:
-        raise AssertionError(
-            "Shuffle-target sanity check failed: shuffled labels retained signal",
-        )
+    if np.nanmean(np.abs(perm_scores_arr - (0.5 if binary_mask else 0.0))) > tolerance:
+        raise AssertionError("Shuffle-target sanity check failed: residual signal detected")
 
-    return baseline, perm_scores_arr
+    return {
+        "baseline_score": baseline_score,
+        "shuffle_scores": perm_scores_arr,
+        "metric": "auc" if binary_mask else "r2",
+    }
 
 
-__all__ = ["assert_no_future_features", "shuffle_target_sanity_check"]
+__all__ = ["assert_no_future_features", "shuffle_target_sanity"]
