@@ -1,0 +1,9 @@
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.pytest_cache/
+artifacts/
+data/feature_store/

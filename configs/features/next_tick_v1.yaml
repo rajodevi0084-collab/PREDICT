@@ -1,0 +1,26 @@
+groups:
+  price:
+    returns: [1,2,4,8]
+    ema_gaps: [5,10,20]
+    range_pct: [8,32,64]
+    realized_vol: [8,32,64,128]
+  micro:
+    vwap_gap: [32]
+    spread: [1]
+    imbalance: [1,2,4,8]
+    trade_burst: [8,16]
+  orderbook:
+    levels: [1,2,5,10]
+    depth_sums: true
+    skew: true
+    slope: true
+    convexity: false
+    deltas: [1,2,4]
+  regime:
+    vol_quantile: true
+    session_bucket: true
+  hygiene:
+    winsor_sigma: 5
+    vol_standardize: true
+    drop_corr_gt: 0.97
+keep_top_k: 300
