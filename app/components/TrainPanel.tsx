@@ -23,10 +23,12 @@ interface LogMessage {
   payload: Record<string, unknown>;
 }
 
+const ENFORCED_HORIZON = 1;
+
 const DEFAULT_FORM: TrainStartRequest = {
   files: [],
   symbols: [],
-  horizon: 5,
+  horizon: ENFORCED_HORIZON,
   epochs: 25,
   feature_budget: 128,
   coverage: 0.75,
@@ -211,7 +213,14 @@ export function TrainPanel() {
         </label>
         <label className="field">
           <span>Horizon</span>
-          <input type="number" min={1} value={form.horizon} onChange={handleNumberChange("horizon")} />
+          <input
+            type="number"
+            min={1}
+            value={ENFORCED_HORIZON}
+            disabled
+            aria-readonly
+          />
+          <small style={{ color: "#555" }}>H=1 enforced for next-bar OHLCV.</small>
         </label>
         <label className="field">
           <span>Epochs</span>

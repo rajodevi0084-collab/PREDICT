@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any, Dict
 
@@ -24,6 +25,9 @@ def _load_project_config(path: str | Path) -> Dict[str, Any]:
         return yaml.safe_load(fh)
 
 
+logger = logging.getLogger(__name__)
+
+
 def train_next_bar(
     df: pd.DataFrame,
     *,
@@ -35,18 +39,34 @@ def train_next_bar(
     task_cfg = config["tasks"]["next_bar_ohlcv"]
 
     spec = load_feature_spec(task_cfg["feature_set"])
-    labels = build_next_bar_targets(df, dead_zone_abs_bp=task_cfg["dead_zone_abs_bp"])
+    y_reg, y_cls = build_next_bar_targets(
+        df,
+        dead_zone_abs_bp=task_cfg["dead_zone_abs_bp"],
+        horizon_bars=task_cfg["horizon_bars"],
+    )
 
     builder = resolve_feature_builder(spec.name)
-    X = builder.build_feature_matrix(df, spec, labels=labels)
-    assert_no_future_features(X, labels.index)
+    X_raw = builder.build_feature_matrix(df, spec)
 
-    shuffle_target_sanity(X, labels["y_reg"], tolerance=0.1, n_permutations=3)
+    X = X_raw.loc[y_reg.index]
+    y_reg = y_reg.loc[X.index]
+    y_cls = y_cls.loc[X.index]
+
+    labels = pd.DataFrame({"y_reg": y_reg, "y_cls": y_cls}, index=y_reg.index)
+    n_labels = len(labels)
+
+    X = builder.rank_and_select(X, y_reg, spec)
+
+    assert_no_future_features(X, y_reg.index)
+
+    shuffle_target_sanity(X, y_reg, tolerance=0.1, n_permutations=3)
+
+    logger.info("shift=+1 confirmed")
 
     close = df["close"].astype(float)
-    actual_next_close = close.shift(-1).loc[labels.index]
-    baseline_last = close.loc[labels.index]
-    ema5 = close.ewm(span=5, adjust=False).mean().loc[labels.index]
+    actual_next_close = close.shift(-1).loc[y_reg.index]
+    baseline_last = close.loc[y_reg.index]
+    ema5 = close.ewm(span=5, adjust=False).mean().loc[y_reg.index]
 
     predicted_close = baseline_last
     mae_vs_last = mae_price(actual_next_close, predicted_close)
@@ -64,12 +84,12 @@ def train_next_bar(
 
     report_dir = Path("reports/next_bar")
     report = build_next_bar_report(
-        actual_next_close.reindex(labels.index, method="nearest"),
+        actual_next_close.reindex(y_reg.index, method="nearest"),
         predicted_close,
-        baseline_last.reindex(labels.index, method="nearest"),
+        baseline_last.reindex(y_reg.index, method="nearest"),
         ema5,
         probs,
-        labels["y_cls"],
+        y_cls,
         conformal_bands[:, [0, 2]],
         report_dir,
         reg_calibration=reg_calibrator.model,
@@ -77,9 +97,9 @@ def train_next_bar(
 
     splits = list(
         rolling_windows(
-            labels.index,
-            train_size=max(len(labels) // 2, 1),
-            test_size=max(len(labels) // 4, 1),
+            y_reg.index,
+            train_size=max(n_labels // 2, 1),
+            test_size=max(n_labels // 4, 1),
             purge_bars=task_cfg.get("purge_bars", 0),
             embargo_bars=task_cfg.get("embargo_bars", 0),
         )

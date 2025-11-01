@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { NextBarHistoryPoint, NextBarPrediction } from "../state/prediction";
+import type { NextBarPoint, NextBarPrediction } from "../state/prediction";
 import { getNextBar } from "../state/prediction";
 
 type Props = {
@@ -10,7 +10,7 @@ function formatPct(value: number) {
   return `${(value * 100).toFixed(1)}%`;
 }
 
-function formatTime(value: string | null) {
+function formatTime(value?: string) {
   return value ?? "—";
 }
 
@@ -18,7 +18,7 @@ export function NextBarPanel({ symbol }: Props) {
   const [prediction, setPrediction] = useState<NextBarPrediction | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [smooth, setSmooth] = useState(false);
-  const [hovered, setHovered] = useState<NextBarHistoryPoint | null>(null);
+  const [hovered, setHovered] = useState<NextBarPoint | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -39,23 +39,14 @@ export function NextBarPanel({ symbol }: Props) {
     };
   }, [symbol]);
 
-  const history = useMemo<NextBarHistoryPoint[]>(() => {
+  const history = useMemo<NextBarPoint[]>(() => {
     if (!prediction) {
       return [];
     }
     if (prediction.history && prediction.history.length > 0) {
       return prediction.history;
     }
-    return [
-      {
-        obs_time: prediction.obs_time,
-        target_time: prediction.target_time,
-        next_close_hat: prediction.next_close_hat,
-        p_down: prediction.p_down,
-        p_flat: prediction.p_flat,
-        p_up: prediction.p_up,
-      },
-    ];
+    return [prediction];
   }, [prediction]);
 
   const displaySeries = useMemo(() => {
@@ -70,24 +61,31 @@ export function NextBarPanel({ symbol }: Props) {
     });
   }, [history, smooth]);
 
+  const predSeries = useMemo(() => {
+    return displaySeries.map((point) => ({
+      x: new Date(point.target_time),
+      y: point.next_close_hat,
+    }));
+  }, [displaySeries]);
+
   const chartPoints = useMemo(() => {
-    if (displaySeries.length === 0) {
+    if (predSeries.length === 0) {
       return [];
     }
     const width = 360;
     const height = 160;
     const padding = 16;
-    const closes = displaySeries.map((point) => point.next_close_hat);
+    const closes = predSeries.map((point) => point.y);
     const minClose = Math.min(...closes);
     const maxClose = Math.max(...closes);
     const span = maxClose - minClose || 1;
-    return displaySeries.map((point, idx) => {
-      const fraction = displaySeries.length > 1 ? idx / (displaySeries.length - 1) : 0.5;
+    return predSeries.map((point, idx) => {
+      const fraction = predSeries.length > 1 ? idx / (predSeries.length - 1) : 0.5;
       const x = padding + fraction * (width - padding * 2);
-      const y = height - padding - ((point.next_close_hat - minClose) / span) * (height - padding * 2);
-      return { ...point, x, y };
+      const y = height - padding - ((point.y - minClose) / span) * (height - padding * 2);
+      return { ...displaySeries[idx], x, y };
     });
-  }, [displaySeries]);
+  }, [displaySeries, predSeries]);
 
   if (error) {
     return <div role="alert">{error}</div>;
@@ -136,7 +134,7 @@ export function NextBarPanel({ symbol }: Props) {
         />
         {chartPoints.map((point, idx) => (
           <circle
-            key={`${point.target_time ?? "pt"}-${idx}`}
+            key={`${point.target_time}-${idx}`}
             cx={point.x}
             cy={point.y}
             r={4}

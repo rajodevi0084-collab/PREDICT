@@ -13,36 +13,29 @@ export interface NextTickPrediction {
   bands: number[];
 }
 
-export interface NextBarBands {
+export type NextBarBands = {
   lo: number;
   med: number;
   hi: number;
-}
+};
 
-export interface NextBarHistoryPoint {
-  obs_time: string | null;
-  target_time: string | null;
-  next_close_hat: number;
-  p_down: number;
-  p_flat: number;
-  p_up: number;
-}
-
-export interface NextBarPrediction {
-  symbol?: string;
-  obs_time: string | null;
-  target_time: string | null;
+export type NextBarPoint = {
+  symbol: string;
+  horizon: number;
+  obs_time: string;
+  target_time: string;
   c_t: number;
+  y_reg_hat: number;
+  next_close_hat: number;
   p_down: number;
   p_flat: number;
   p_up: number;
-  y_reg_hat: number;
-  y_reg_hat_raw?: number;
-  next_close_hat: number;
   bands: NextBarBands;
-  history?: NextBarHistoryPoint[];
-  calibration?: { a: number; b: number };
-}
+};
+
+export type NextBarPrediction = NextBarPoint & {
+  history?: NextBarPoint[];
+};
 
 export async function getNextTick(symbol: string): Promise<NextTickPrediction> {
   const response = await fetch("/prediction/next-tick", {
